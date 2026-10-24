@@ -22,4 +22,5 @@ Tests: `py test_ml_local.py` and `py test_live_local.py`.
 
 ## Settings and secrets
 Copy `secrets.toml.example` to `.streamlit/secrets.toml` (never upload it). Login users are added with
-`py make_password_hash.py`. Without login users the app opens without a login page.
+`py make_password_hash.py`. "Sign in with Google" is turned on by the `[auth]`, `[auth.google]` and
+`[roles]` sections (see the example file). Without any of these the app opens without a login page.

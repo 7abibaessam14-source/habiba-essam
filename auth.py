@@ -7,7 +7,20 @@ Users live in .streamlit/secrets.toml (never in the code), with a HASHED passwor
     password_hash = "pbkdf2_sha256$200000$<salt>$<hash>"   # make it with:  py make_password_hash.py
     role = "admin"      # admin = every page; viewer = no Pipeline monitor and no email button
 
-No [auth] section -> login is off (handy on your own PC) and the app shows a "Login is off" note.
+Optional "Sign in with Google" (Streamlit's st.login, needs the authlib package): anyone with a Google
+account can sign in and gets the viewer role; emails listed in [roles] admin_emails get the admin role.
+
+    [auth]
+    redirect_uri = "https://YOUR-APP.streamlit.app/oauth2callback"
+    cookie_secret = "<long random text>"
+    [auth.google]
+    client_id = "...apps.googleusercontent.com"
+    client_secret = "..."
+    server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+    [roles]
+    admin_emails = ["you@gmail.com"]
+
+No users and no Google -> login is off (handy on your own PC) and the app shows a "Login is off" note.
 
 Passwords are checked with PBKDF2-SHA256 (Python's hashlib, no extra package). The login lasts for the
 browser session: reloading the page logs you out.
@@ -53,14 +66,37 @@ def configured_users():
     return {name: dict(cfg) for name, cfg in users.items()}
 
 
+def _secrets_section(name):
+    try:
+        return st.secrets.get(name, {})
+    except FileNotFoundError:  # no secrets.toml at all
+        return {}
+
+
+def google_enabled():
+    """True when the secrets hold everything st.login("google") needs."""
+    auth, google = _secrets_section("auth"), _secrets_section("auth").get("google", {})
+    return all(auth.get(k) for k in ("redirect_uri", "cookie_secret")) and all(
+        google.get(k) for k in ("client_id", "client_secret", "server_metadata_url")
+    )
+
+
+def admin_emails():
+    return {e.strip().lower() for e in _secrets_section("roles").get("admin_emails", [])}
+
+
 def login_enabled():
-    return bool(configured_users())
+    return bool(configured_users()) or google_enabled()
 
 
 def current_user():
     """{"name", "role"} of the logged-in user, an admin stand-in when login is off, or None."""
     if not login_enabled():
         return {"name": "local", "role": "admin"}
+    if google_enabled() and st.user.is_logged_in:
+        email = str(st.user.get("email") or "").lower()
+        role = "admin" if email in admin_emails() else "viewer"
+        return {"name": st.user.get("name") or email, "email": email, "role": role, "google": True}
     return st.session_state.get("auth_user")
 
 
@@ -70,7 +106,10 @@ def is_admin():
 
 
 def logout():
+    google = (current_user() or {}).get("google")
     st.session_state.clear()  # forget the user and everything they did (Live replay, settings, ...)
+    if google:
+        st.logout()  # also removes the Google login cookie
 
 
 def login_page(title, subtitle):
@@ -78,10 +117,20 @@ def login_page(title, subtitle):
     with mid:
         st.header(title)
         st.caption(subtitle)
+        if google_enabled():
+            if st.button("Sign in with Google", icon=":material/login:", type="primary", width="stretch"):
+                st.login("google")
+            st.caption("Anyone with a Google account can sign in.")
+        if not configured_users():
+            return
+        if google_enabled():
+            st.markdown("**or** use a username and password")
         with st.form("login"):
             name = st.text_input("Username")
             password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log in", type="primary", width="stretch")
+            submitted = st.form_submit_button(
+                "Log in", type="secondary" if google_enabled() else "primary", width="stretch"
+            )
 
         if not submitted:
             return

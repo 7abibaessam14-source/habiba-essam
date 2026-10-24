@@ -168,14 +168,16 @@ def demo_frames():
 
 
 # ---- ML helpers (cached so sliders don't retrain the models) ---------------
-@st.cache_data(ttl=3600, show_spinner="Building the hourly series...")
+# No time limit: on the free cloud server training takes ~30 s, so keep the results while the app runs.
+# max_entries keeps memory bounded when many households are opened.
+@st.cache_data(max_entries=20, show_spinner="Building the hourly series...")
 def hourly_for(household_key, _df, n_rows):
     # _df is excluded from hashing (leading underscore); n_rows invalidates the cache when data changes
     household = None if household_key == ALL_LABEL else household_key
     return to_hourly(_df, household=household)
 
 
-@st.cache_resource(ttl=3600, show_spinner="Training Random Forest / XGBoost...")
+@st.cache_resource(max_entries=10, show_spinner="Training Random Forest / XGBoost...")
 def train_for(household_key, _hourly, n_hours):
     feats = add_features(_hourly)
     if len(feats) < 500:
@@ -183,6 +185,12 @@ def train_for(household_key, _hourly, n_hours):
             f"Only {len(feats)} usable hourly rows for this selection - need ~500 (about 3 weeks) to train."
         )
     return train_and_compare(feats)
+
+
+@st.cache_data(max_entries=50, show_spinner="Checking for anomalies...")
+def anomalies_for(household_key, best_name, n_test, z, contamination, mode, _res):
+    # Isolation Forest is the slow part; run it once per household + setting, not on every click
+    return detect_anomalies(_res["test"], _res["best_model"], z_thresh=z, contamination=contamination, mode=mode)
 
 
 # ---- Airflow REST API -----------------------------------------------------
@@ -304,6 +312,11 @@ def get_ml():
     return hourly, res
 
 
+def get_anomalies(res):
+    """detect_anomalies() for the current household and sidebar settings (cached)."""
+    return anomalies_for(ml_choice, res["best_name"], len(res["test"]), z_thresh, contamination, detect_mode, res)
+
+
 def household_label():
     return "All households (avg)" if ml_choice == ALL_LABEL else ml_choice
 
@@ -338,8 +351,9 @@ def render_analytics():
     st.subheader("Consumption trend over time")
     trend = filtered.groupby(filtered["date_only"].dt.date)["KWH_hh"].sum().reset_index()
     trend.columns = ["date", "total_kwh"]
+    few_days = len(trend) <= 120  # a dot per day only when there are few days; 1,400 dots are slow to draw
     if len(trend) > 1:
-        chart = alt.Chart(trend).mark_line(point=True).encode(
+        chart = alt.Chart(trend).mark_line(point=few_days).encode(
             x="date:T", y="total_kwh:Q", tooltip=["date:T", "total_kwh:Q"]
         )
         st.altair_chart(chart, width="stretch")
@@ -369,7 +383,7 @@ def render_analytics():
         forecast_df = pd.DataFrame({"date": future_dates, "total_kwh": future_y, "type": "forecast"})
         actual_df = trend_sorted.assign(date=pd.to_datetime(trend_sorted["date"]), type="actual")
         combined = pd.concat([actual_df, forecast_df], ignore_index=True)
-        forecast_chart = alt.Chart(combined).mark_line(point=True).encode(
+        forecast_chart = alt.Chart(combined).mark_line(point=few_days).encode(
             x="date:T",
             y="total_kwh:Q",
             color=alt.Color("type:N", scale=alt.Scale(domain=["actual", "forecast"], range=ACTUAL_VS_MODEL)),
@@ -519,13 +533,7 @@ def render_anomalies():
         st.warning(f"Could not train the models for this selection: {e}")
         return
 
-    an = detect_anomalies(
-        res["test"],
-        res["best_model"],
-        z_thresh=z_thresh,
-        contamination=contamination,
-        mode=detect_mode,
-    )
+    an = get_anomalies(res)
     flagged = an[an["is_anomaly"]]
 
     c1, c2, c3 = st.columns(3)
@@ -575,13 +583,7 @@ def render_alerts():
     )
     use_anom = c2.checkbox("Also raise anomaly alerts", value=True)
 
-    an = detect_anomalies(
-        res["test"],
-        res["best_model"],
-        z_thresh=z_thresh,
-        contamination=contamination,
-        mode=detect_mode,
-    )
+    an = get_anomalies(res)
     if not use_anom:
         an = an.assign(is_anomaly=False)
     alerts = build_alerts(an, household=household_label(), threshold_kwh=thr)
@@ -812,9 +814,7 @@ def render_home():
     else:
         rmse = res["metrics"].set_index("model")["RMSE"]
         better = 100 * (1 - rmse[res["best_name"]] / rmse["Baseline (same hour yesterday)"])
-        an = detect_anomalies(
-            res["test"], res["best_model"], z_thresh=z_thresh, contamination=contamination, mode=detect_mode
-        )
+        an = get_anomalies(res)
         alerts = build_alerts(an, household=household_label(), threshold_kwh=compute_threshold(res["train"]["kwh"]))
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Best model", res["best_name"], f"{better:.0f}% vs baseline", help="Lower forecast error (RMSE)")
