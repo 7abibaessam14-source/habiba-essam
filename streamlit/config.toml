@@ -1,0 +1,24 @@
+# Light and dark colours for the dashboard (no secrets here, safe to upload).
+# Switch with the  ⋮  menu (top right) -> System / Light / Dark.
+# No [theme] base is set, so the app follows the computer's light/dark setting until you pick one.
+# Restart Streamlit after changing this file.
+
+[theme]
+baseRadius = "medium"
+showSidebarBorder = true
+
+[theme.light]
+primaryColor = "#0E7C86"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F6F8"
+textColor = "#1B2430"
+borderColor = "#D9E2E7"
+chartCategoricalColors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#7f7f7f", "#9467bd"]
+
+[theme.dark]
+primaryColor = "#2BB3C0"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A202B"
+textColor = "#E6EAF0"
+borderColor = "#2C3442"
+chartCategoricalColors = ["#4C9BE8", "#FF9F40", "#4CC26A", "#F0605D", "#A0A7B4", "#B08CE0"]
