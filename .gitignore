@@ -1,0 +1,17 @@
+# secrets - never upload
+.streamlit/secrets.toml
+.env
+
+# big local data files (UCI txt is ~133 MB); only the zipped UCI copy (19.5 MB) is uploaded
+data/*
+!data/household_power_consumption.zip
+
+# pictures made for the report
+report_images/
+
+# trained models (test_ml_local.py writes best_model.joblib)
+*.joblib
+
+# Python cache
+__pycache__/
+*.pyc

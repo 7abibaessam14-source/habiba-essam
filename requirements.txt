@@ -1,0 +1,9 @@
+streamlit==1.66.0
+pandas==3.0.6
+numpy==2.5.4
+requests==2.34.2
+altair==6.3.0
+scikit-learn==1.9.1
+xgboost==3.4.1
+joblib==1.6.0
+snowflake-connector-python==5.0.0
