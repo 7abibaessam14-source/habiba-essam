@@ -1,5 +1,7 @@
 # secrets - never upload
 .streamlit/secrets.toml
+.streamlit/app_users.json
+.streamlit/*.tmp
 .env
 
 # big local data files (UCI txt is ~133 MB); only the zipped UCI copy (19.5 MB) is uploaded
