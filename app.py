@@ -34,6 +34,7 @@ from demo_data import make_demo_frames
 from uci_loader import APPLIANCE_COLUMNS, UCI_FILENAME, load_uci, uci_path, uci_signature
 from alerts import build_alerts, compute_threshold, send_email_alert
 import auth
+from billing import EGYPT_TIERS, bill_egp, month_projection, saving_tips
 from live import LiveReplay
 from ml_models import FEATURES, add_features, detect_anomalies, forecast_next, to_hourly, train_and_compare
 
@@ -244,7 +245,7 @@ STATE_COLORS = {
 
 # ---- Login first: nothing is loaded before someone is logged in ---------------
 st.logo(str(ASSETS / "logo.svg"), icon_image=str(ASSETS / "icon.svg"), size="large")
-PAGE_URLS = ["home", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
+PAGE_URLS = ["home", "bill", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
 if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which
     # Streamlit would otherwise keep showing) and a link like /live opens that page after logging in.
@@ -319,6 +320,52 @@ def get_anomalies(res):
 
 def household_label():
     return "All households (avg)" if ml_choice == ALL_LABEL else ml_choice
+
+
+# ---- Bill & Budget settings (kept across pages, like the ML settings) -----------
+TIER_LABELS = ["0–50", "51–100", "101–200", "201–350", "351–650", "651–1000", "over 1000"]
+BILL_DEFAULTS = {"bill_mode": "Egyptian tiers (Aug 2026)", "bill_price": 2.0, "bill_budget": 500.0}
+BILL_DEFAULTS.update({f"tier_{i}": price for i, (_, price) in enumerate(EGYPT_TIERS)})
+if data_error is None:
+    BILL_DEFAULTS["bill_asof"] = fact_df["DateTime"].max().date()  # the data is historical: start at its last day
+for _k, _v in BILL_DEFAULTS.items():
+    st.session_state.setdefault(_k, _v)
+    st.session_state[_k] = st.session_state[_k]
+
+
+def bill_tariff():
+    """(tiers, flat_price) from the Bill & Budget settings; exactly one of them is used."""
+    if st.session_state.bill_mode.startswith("Fixed"):
+        return None, float(st.session_state.bill_price)
+    return [(upper, float(st.session_state[f"tier_{i}"])) for i, (upper, _) in enumerate(EGYPT_TIERS)], None
+
+
+def bill_summary(hourly, res):
+    """Month-end projection for the 'as of' day: the model forecasts the next 24 hours, typical days the rest."""
+    tiers, flat = bill_tariff()
+    as_of = pd.Timestamp(st.session_state.bill_asof)
+    try:
+        nxt = float(forecast_next(res["best_model"], hourly.loc[: as_of + pd.Timedelta(hours=23)], steps=24).sum())
+    except Exception:  # too little history before that day
+        nxt = None
+    return month_projection(hourly, as_of, nxt, tiers, flat), tiers, flat
+
+
+def appliance_month_kwh(proj):
+    """{appliance: kWh} measured this month up to the 'as of' day, when the data has sub-meters (UCI)."""
+    cols = list(APPLIANCE_COLUMNS)
+    if not set(cols) <= set(fact_df.columns):
+        return None
+    d = fact_df[(fact_df["DateTime"] >= proj["month"]) & (fact_df["DateTime"] < proj["as_of"] + pd.Timedelta(days=1))]
+    if ml_choice != ALL_LABEL:
+        d = d[d["LCLid"] == ml_choice]
+    s = d[cols].sum()
+    return {APPLIANCE_COLUMNS[c]: float(s[c]) for c in cols} if s.sum() > 0 else None
+
+
+def show_tips(tips):
+    for kind, text in tips:
+        {"warn": st.warning, "good": st.success}.get(kind, st.info)(text, icon={"warn": "⚠️", "good": "✅"}.get(kind, "💡"))
 
 
 # ---- Tab renderers -----------------------------------------------------------
@@ -424,6 +471,16 @@ def render_appliances():
     st.subheader("Where the energy goes")
     for box, col in zip(st.columns(len(cols)), cols):
         box.metric(APPLIANCE_COLUMNS[col], f"{totals[col]:,.0f} kWh", f"{100 * totals[col] / max(whole, 1e-9):.1f}% of total", delta_color="off")
+    # cost: price of a typical month of this house, at the tariff chosen on the Bill & Budget page
+    months = max((d["DateTime"].max() - d["DateTime"].min()).days / 30.44, 1.0)
+    per_month = whole / months
+    tiers, flat = bill_tariff()
+    avg_price = bill_egp(per_month, tiers, flat) / per_month if per_month else 0.0
+    st.caption(
+        "Estimated cost at the current tariff: "
+        + " · ".join(f"{APPLIANCE_COLUMNS[c]} **{totals[c] * avg_price:,.0f} EGP**" for c in cols)
+        + f" (average {avg_price:.2f} EGP/kWh for a typical month of {per_month:,.0f} kWh)."
+    )
 
     st.subheader("Consumption over time, by appliance")
     rule = {"Daily": "D", "Weekly": "W", "Monthly": "MS"}[grain]
@@ -687,6 +744,7 @@ def render_live():
         live = st.session_state.live
         if st.session_state.live_running and not st.session_state.pop("live_skip_step", False):
             out = live.step()
+            st.session_state.live_last_wall = pd.Timestamp.now()  # when this reading 'arrived'
             if out is not None:
                 for _, a in out[1].iterrows():
                     st.toast(f"{a['type']} ({a['severity']}): {a['message']}", icon="🚨")
@@ -697,14 +755,21 @@ def render_live():
         last = live.seen.iloc[-1]
         last_ts = live.seen.index[-1]
         alerted = last_ts in set(live.alerts["timestamp"])
-        st.markdown(f":material/schedule: **Replay clock:** {last_ts:%Y-%m-%d %H:%M}")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Now (kWh)", f"{last['kwh']:.2f}")
-        m2.metric("Expected (kWh)", f"{last['pred']:.2f}")
+        wall = st.session_state.get("live_last_wall") if live.streamed else None
+        st.markdown(
+            f":material/schedule: **Replay clock:** {last_ts:%Y-%m-%d %H:%M} &nbsp;·&nbsp; "
+            f":material/sensors: **Last reading received:** {f'{wall:%H:%M:%S}' if wall is not None else 'waiting for Start'}"
+            " &nbsp;·&nbsp; *simulated meter*"
+        )
+        today_kwh = live.seen.loc[live.seen.index.normalize() == last_ts.normalize(), "kwh"].sum()
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Power now", f"{last['kwh'] * 1000:,.0f} W", help="Average power over the last hour (kWh per hour x 1000).")
+        m2.metric("Expected", f"{last['pred'] * 1000:,.0f} W")
+        m3.metric("Today so far", f"{today_kwh:.1f} kWh", help="Since midnight of the replay day.")
         if live.streamed == 0:
-            m3.metric("Status", "⏳ ready")
+            m4.metric("Status", "⏳ ready")
         else:
-            m3.metric("Status", "🔴 ALERT" if alerted else "🟢 normal")
+            m4.metric("Status", "🔴 ALERT" if alerted else "🟢 normal")
 
         state = "running" if st.session_state.live_running else ("finished" if live.finished else "paused")
         st.progress(
@@ -785,6 +850,143 @@ def render_monitor():
         st.info("No DAG runs found yet, or Airflow API is unreachable.")
 
 
+APPLIANCE_ESTIMATE_DEFAULTS = pd.DataFrame(
+    [
+        ("Air conditioner (1.5 HP)", True, 1100, 8.0),
+        ("Refrigerator", True, 150, 10.0),
+        ("Electric water heater", True, 1500, 2.0),
+        ("Washing machine", True, 500, 1.0),
+        ("Television", True, 100, 5.0),
+        ("Lighting (all LED)", True, 100, 6.0),
+        ("Computer / laptop", True, 60, 4.0),
+    ],
+    columns=["Device", "Have it", "Power (W)", "Hours per day"],
+)
+
+
+def render_bill():
+    try:
+        hourly, res = get_ml()
+    except Exception as e:
+        st.warning(f"Could not train the models for this selection: {e}")
+        return
+    dmin, dmax = hourly.dropna().index.min().date(), hourly.dropna().index.max().date()
+
+    c1, c2, c3 = st.columns([1.4, 1, 1])
+    c1.radio("Tariff", ["Egyptian tiers (Aug 2026)", "Fixed price per kWh"], key="bill_mode", horizontal=True)
+    c2.number_input("Monthly budget (EGP)", min_value=0.0, step=50.0, key="bill_budget")
+    c3.date_input("Month of (as of this day)", min_value=dmin, max_value=dmax, key="bill_asof",
+                  help="The data is historical, so pick the day that counts as 'today'.")
+    if st.session_state.bill_mode.startswith("Fixed"):
+        st.number_input("Price (EGP per kWh)", min_value=0.05, step=0.05, key="bill_price")
+    else:
+        with st.expander("Tariff tiers (EGP per kWh) - edit them if the government changes the prices"):
+            for box, (i, label) in zip(st.columns(len(TIER_LABELS)), enumerate(TIER_LABELS)):
+                box.number_input(f"{label} kWh", min_value=0.0, step=0.01, format="%.2f", key=f"tier_{i}")
+
+    proj, tiers, flat = bill_summary(hourly, res)
+    budget = float(st.session_state.bill_budget)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("This month so far", f"{proj['used_egp']:,.0f} EGP", f"{proj['used_kwh']:,.0f} kWh", delta_color="off")
+    m2.metric("Expected at month end", f"{proj['projected_egp']:,.0f} EGP",
+              f"{proj['low_egp']:,.0f}–{proj['high_egp']:,.0f} EGP", delta_color="off",
+              help="The range shows how much your daily use varied in the last 28 days.")
+    if proj["prev_egp"]:
+        m3.metric("Last month", f"{proj['prev_egp']:,.0f} EGP",
+                  f"{(proj['projected_egp'] - proj['prev_egp']) / proj['prev_egp']:+.0%} this month", delta_color="inverse")
+    else:
+        m3.metric("Last month", "—", help="Not enough data for last month.")
+    if budget > 0:
+        left = budget - proj["projected_egp"]
+        m4.metric("Budget", f"{budget:,.0f} EGP", f"{left:,.0f} EGP left" if left >= 0 else f"{-left:,.0f} EGP over",
+                  delta_color="normal" if left >= 0 else "inverse")
+        if left < 0:
+            st.error(f"Budget alert: the expected bill ({proj['projected_egp']:,.0f} EGP) is over your budget "
+                     f"of {budget:,.0f} EGP.", icon="🚨")
+        else:
+            st.success(f"On track: the expected bill is {left:,.0f} EGP under your budget.", icon="✅")
+    if proj["history_days"] < 28:
+        st.info(f"Experimental forecast: only {proj['history_days']} days of history before this day, "
+                "so the month-end value is less certain.", icon="🧪")
+    st.caption(
+        f"{proj['month']:%B %Y}, as of {proj['as_of']:%d %b}: {proj['remaining_days']} days left. Estimate only: each "
+        "kWh is priced at its tier's price; real bills can add fees. Tomorrow uses the model's 24-hour forecast, "
+        "the other days your average day."
+    )
+
+    # cumulative bill through the month: actual days, then expected days, against the budget
+    daily = proj["daily"].fillna(0)
+    rows, total = [], 0.0
+    for day, kwh in daily.items():
+        total += kwh
+        rows.append((day, bill_egp(total, tiers, flat), "actual"))
+    rows_exp = [(proj["as_of"], bill_egp(total, tiers, flat), "expected")]
+    for k in range(1, proj["remaining_days"] + 1):
+        total += (proj["projected_kwh"] - proj["used_kwh"]) / proj["remaining_days"]
+        rows_exp.append((proj["as_of"] + pd.Timedelta(days=k), bill_egp(total, tiers, flat), "expected"))
+    cum = pd.DataFrame(rows + rows_exp, columns=["day", "egp", "type"])
+    st.subheader("Bill through the month")
+    chart = alt.Chart(cum).mark_line(point=True).encode(
+        x=alt.X("day:T", title=None),
+        y=alt.Y("egp:Q", title="EGP"),
+        color=alt.Color("type:N", scale=alt.Scale(domain=["actual", "expected"], range=ACTUAL_VS_MODEL)),
+        strokeDash=alt.StrokeDash("type:N", scale=alt.Scale(domain=["actual", "expected"], range=[[1, 0], [5, 3]])),
+        tooltip=["day:T", alt.Tooltip("egp:Q", format=",.0f")],
+    )
+    if budget > 0:
+        chart = chart + alt.Chart(pd.DataFrame({"budget": [budget]})).mark_rule(color="red", strokeDash=[4, 3]).encode(y="budget:Q")
+    st.altair_chart(chart, width="stretch")
+    st.caption("Red dashed line = your budget.")
+
+    st.subheader("Last 12 months")
+    months = hourly.loc[: proj["as_of"] + pd.Timedelta(hours=23)].resample("MS").sum(min_count=24 * 20).dropna().tail(12)
+    hist = pd.DataFrame({"month": months.index, "kwh": months.values})
+    hist["egp"] = [bill_egp(k, tiers, flat) for k in hist["kwh"]]
+    st.altair_chart(
+        alt.Chart(hist).mark_bar().encode(
+            x=alt.X("month:T", title=None, timeUnit="yearmonth"), y=alt.Y("egp:Q", title="EGP"),
+            tooltip=[alt.Tooltip("month:T", timeUnit="yearmonth"), alt.Tooltip("kwh:Q", format=",.0f"),
+                     alt.Tooltip("egp:Q", format=",.0f")],
+        ),
+        width="stretch",
+    )
+
+    st.subheader("Where is my electricity going?")
+    measured = appliance_month_kwh(proj)
+    if measured:
+        tot = sum(measured.values())
+        st.dataframe(
+            pd.DataFrame([(n, k, k / tot, proj["used_egp"] * k / tot) for n, k in measured.items()],
+                         columns=["Appliance (measured)", "kWh this month", "Share", "Cost (EGP)"]),
+            hide_index=True, width="stretch",
+            column_config={"kWh this month": st.column_config.NumberColumn(format="%.0f"),
+                           "Share": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+                           "Cost (EGP)": st.column_config.NumberColumn(format="%.0f")},
+        )
+        st.caption("Measured by the house's three sub-meters; 'Other' is everything they do not cover.")
+    st.markdown("**Estimate for your own devices** - tick what you have and set the power and hours "
+                "(a single meter cannot measure each device, so these are estimates):")
+    est = st.data_editor(APPLIANCE_ESTIMATE_DEFAULTS, hide_index=True, width="stretch", key="appliance_editor",
+                         column_config={"Power (W)": st.column_config.NumberColumn(min_value=0, step=10),
+                                        "Hours per day": st.column_config.NumberColumn(min_value=0.0, max_value=24.0, step=0.5)})
+    est = est[est["Have it"]].copy()
+    if len(est):
+        est["kWh per month"] = est["Power (W)"] * est["Hours per day"] * proj["days_in_month"] / 1000
+        est_total = est["kWh per month"].sum()
+        est["Cost (EGP)"] = est["kWh per month"] / est_total * bill_egp(est_total, tiers, flat) if est_total else 0.0
+        st.dataframe(est[["Device", "kWh per month", "Cost (EGP)"]].sort_values("kWh per month", ascending=False),
+                     hide_index=True, width="stretch",
+                     column_config={"kWh per month": st.column_config.NumberColumn(format="%.0f"),
+                                    "Cost (EGP)": st.column_config.NumberColumn(format="%.0f")})
+        st.caption(f"Your devices add up to about {est_total:,.0f} kWh a month; the meter expects "
+                   f"{proj['projected_kwh']:,.0f} kWh for this month.")
+
+    st.subheader("Energy-saving assistant")
+    show_tips(saving_tips(hourly, proj, budget or None, measured, tiers, flat))
+    st.caption("Tips are worked out from your own consumption, forecast and tariff.")
+
+
 def render_home():
     st.title(f"⚡ {APP_NAME}")
     st.caption(
@@ -823,11 +1025,22 @@ def render_home():
         m4.metric("Alerts", f"{len(alerts):,}")
         st.caption(f"Household: {household_label()}. Change it, and the sensitivity, on the ML pages.")
 
+        st.subheader("This month's bill")
+        proj, tiers, flat = bill_summary(get_ml()[0], res)
+        budget = float(st.session_state.bill_budget)
+        b1, b2 = st.columns([1, 2])
+        b1.metric(f"Expected for {proj['month']:%B %Y}", f"{proj['projected_egp']:,.0f} EGP",
+                  f"{proj['projected_egp'] - budget:+,.0f} EGP vs budget" if budget else None, delta_color="inverse")
+        with b2:
+            tips = saving_tips(get_ml()[0], proj, budget or None, appliance_month_kwh(proj), tiers, flat)
+            show_tips(sorted(tips, key=lambda t: t[0] != "warn")[:1])  # the most important tip only
+        st.page_link(PAGES["Bill & Budget"], label="Open Bill & Budget for details and saving tips", icon=":material/payments:")
+
     st.subheader("Where to start")
     q1, q2, q3, q4 = st.columns(4)
     q1.page_link(PAGES["Live"], label="Watch the live monitor", icon=":material/sensors:")
     q2.page_link(PAGES["Forecast"], label="See the forecast", icon=":material/trending_up:")
-    q3.page_link(PAGES["Alerts"], label="Check the alerts", icon=":material/notifications:")
+    q3.page_link(PAGES["Bill & Budget"], label="Check your bill", icon=":material/payments:")
     q4.page_link(PAGES["About project"], label="How it works", icon=":material/info:")
 
     with st.expander("How to use this dashboard"):
@@ -897,6 +1110,7 @@ def render_about():
                 ("Azure Data Factory", "🔄 In progress", "-"),
                 ("Pipeline monitoring", "✅ Needs Airflow running", "Pipeline monitor"),
                 ("Login with roles, light / dark theme", "✅ Done", "Sidebar"),
+                ("Bill in EGP, budget alerts, saving assistant", "✅ Done", "Bill & Budget"),
             ],
             columns=["Feature", "Status", "Page"],
         ).set_index("Feature")
@@ -910,6 +1124,7 @@ def render_about():
 # ---- Menu ---------------------------------------------------------------------
 PAGES = {
     "Home": st.Page(render_home, title="Home", icon=":material/home:", url_path="home", default=True),
+    "Bill & Budget": st.Page(render_bill, title="Bill & Budget", icon=":material/payments:", url_path="bill"),
     "Analytics": st.Page(render_analytics, title="Analytics", icon=":material/bar_chart:", url_path="analytics"),
     "Appliances": st.Page(
         render_appliances, title="Appliances", icon=":material/electrical_services:", url_path="appliances"
@@ -926,7 +1141,7 @@ PAGES = {
 monitoring = [PAGES["Live"]] + ([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
 pg = st.navigation(
     {
-        "Overview": [PAGES["Home"]],
+        "Overview": [PAGES["Home"], PAGES["Bill & Budget"]],
         "Analysis": [PAGES["Analytics"], PAGES["Appliances"]],
         "Machine learning": [PAGES["Forecast"], PAGES["Anomalies"], PAGES["Alerts"]],
         "Monitoring": monitoring,
@@ -935,6 +1150,7 @@ pg = st.navigation(
 )
 
 PAGE_INTRO = {
+    "Bill & Budget": "Your bill in Egyptian pounds, the expected bill at month end, budget alerts and saving tips.",
     "Analytics": "Explore consumption by household, date and day type.",
     "Appliances": "Where the energy goes inside the house (UCI sub-meters).",
     "Forecast": "Random Forest vs XGBoost vs a 'same hour yesterday' baseline, and the next 24 hours.",
