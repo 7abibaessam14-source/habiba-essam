@@ -3,7 +3,9 @@ Smart Energy Monitor - Streamlit app (v3)
 
 Pages (sidebar menu, only the open page runs)
   Home              project summary: data source, key numbers, quick links
-  Analytics         household exploration + naive trend baseline
+  Bill & Budget     bill in EGP, month-end projection, budget alerts, saving tips
+  Reports           daily / weekly / monthly report by Gmail, WhatsApp or SMS (preview, send now, save)
+  Analytics        household exploration + naive trend baseline
   Appliances        kitchen / laundry / water heater+AC (needs the UCI file in ./data)
   Forecast          Random Forest vs XGBoost, next-24h forecast
   Anomalies         residual z-score + Isolation Forest on unseen data
@@ -15,12 +17,15 @@ Pages (sidebar menu, only the open page runs)
 Credentials come from Streamlit secrets (.streamlit/secrets.toml), never hardcoded:
   [snowflake]  account, user, password, warehouse, database, schema, role
   [airflow]    base_url, dag_id, user, password
-  [smtp]       host, port, user, password, to = ["a@b.com"]      (optional, for email alerts)
+  [smtp]       host, port, user, password, to = ["a@b.com"]      (optional, for email alerts and reports)
+  [twilio]     account_sid, auth_token, from_number               (optional, for SMS reports)
   [auth.users.<name>]  password_hash, role                        (optional, login; see auth.py)
 
 Light / dark colours: .streamlit/config.toml. Needs the other .py files of this folder.
 """
 
+import json
+import math
 from pathlib import Path
 
 import altair as alt
@@ -37,6 +42,8 @@ import auth
 from billing import EGYPT_TIERS, bill_egp, month_projection, saving_tips
 from live import LiveReplay
 from ml_models import FEATURES, add_features, detect_anomalies, forecast_next, to_hourly, train_and_compare
+import notify
+from reports import CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, now_local
 
 APP_NAME = "Smart Energy Monitor"
 st.set_page_config(page_title=APP_NAME, page_icon="⚡", layout="wide")
@@ -245,7 +252,7 @@ STATE_COLORS = {
 
 # ---- Login first: nothing is loaded before someone is logged in ---------------
 st.logo(str(ASSETS / "logo.svg"), icon_image=str(ASSETS / "icon.svg"), size="large")
-PAGE_URLS = ["home", "bill", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
+PAGE_URLS = ["home", "bill", "reports", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
 if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which
     # Streamlit would otherwise keep showing) and a link like /live opens that page after logging in.
@@ -366,6 +373,36 @@ def appliance_month_kwh(proj):
 def show_tips(tips):
     for kind, text in tips:
         {"warn": st.warning, "good": st.success}.get(kind, st.info)(text, icon={"warn": "⚠️", "good": "✅"}.get(kind, "💡"))
+
+
+# ---- Reports settings: the user's saved choice first, else the defaults -------------
+_saved_report = notify.load_subscriptions().get(auth.current_user()["name"], {})
+REPORT_DEFAULTS = {
+    "rep_freq": _saved_report.get("frequency", "Daily"),
+    "rep_channels": _saved_report.get("channels", ["Gmail"]),
+    "rep_email": _saved_report.get("email", auth.current_user().get("email", "")),
+    "rep_phone": _saved_report.get("phone", ""),
+    "rep_wa_key": _saved_report.get("whatsapp_apikey", ""),
+}
+for _k, _v in REPORT_DEFAULTS.items():
+    st.session_state.setdefault(_k, _v)
+    st.session_state[_k] = st.session_state[_k]
+MAX_SENDS_PER_SESSION = 3  # "Send me one now" uses the app's Gmail / Twilio account, so keep it small
+
+
+@st.cache_data(max_entries=30, show_spinner="Writing the report...")
+def report_for(household_key, best_name, frequency, hour, tiers, flat, budget, _hourly, _res, _fact):
+    # cached per household, frequency, tariff and hour: the report changes when a new hour of readings arrives
+    return build_report(_hourly, _res["best_model"], frequency, now=hour, tiers=tiers, flat_price=flat,
+                        budget_egp=budget, fact=_fact)
+
+
+def report_senders():
+    """(smtp settings, twilio settings) from the secrets, or None when they are missing."""
+    smtp, tw = secret_section("smtp", {}), secret_section("twilio", {})
+    smtp = dict(smtp) if smtp.get("user") and smtp.get("password") else None
+    tw = dict(tw) if all(tw.get(k) for k in ("account_sid", "auth_token", "from_number")) else None
+    return smtp, tw
 
 
 # ---- Tab renderers -----------------------------------------------------------
@@ -987,6 +1024,98 @@ def render_bill():
     st.caption("Tips are worked out from your own consumption, forecast and tariff.")
 
 
+CALLMEBOT_HELP = (
+    "Free WhatsApp messages via CallMeBot. Once only: save +34 644 71 81 99 in your contacts and send it the "
+    "WhatsApp message 'I allow callmebot to send me messages'. The bot replies with your key; paste it here."
+)
+
+
+def render_reports():
+    try:
+        hourly, res = get_ml()
+    except Exception as e:
+        st.warning(f"Could not train the models for this selection: {e}")
+        return
+    tiers, flat = bill_tariff()
+    budget = float(st.session_state.bill_budget) or None
+
+    c1, c2 = st.columns([1, 1.4])
+    c1.radio("How often", FREQUENCIES, key="rep_freq", horizontal=True,
+             help="Daily: every evening at about 8 PM (Cairo time). Weekly: Saturdays. Monthly: the 1st of the month.")
+    c2.multiselect("Send it by", CHANNELS, key="rep_channels")
+    channels = st.session_state.rep_channels
+    a, b, c = st.columns(3)
+    a.text_input("Gmail address", key="rep_email", disabled="Gmail" not in channels, placeholder="you@gmail.com")
+    b.text_input("Phone (with country code)", key="rep_phone", placeholder="+201001234567",
+                 disabled=not {"WhatsApp", "SMS"} & set(channels))
+    c.text_input("WhatsApp key (CallMeBot)", key="rep_wa_key", type="password", disabled="WhatsApp" not in channels,
+                 help=CALLMEBOT_HELP)
+
+    now = now_local().floor("h")
+    fact = fact_df if ml_choice == ALL_LABEL else fact_df[fact_df["LCLid"] == ml_choice]
+    try:
+        r = report_for(ml_choice, res["best_name"], st.session_state.rep_freq, now, tiers, flat, budget, hourly, res, fact)
+    except Exception as e:
+        st.warning(f"Could not build the report: {e}")
+        return
+    proj = r["proj"]
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Today (expected total)", f"{r['today_kwh']:.1f} kWh", f"≈ {r['today_egp']:,.0f} EGP", delta_color="off")
+    m2.metric("Tomorrow (forecast)", f"{r['tomorrow_kwh']:.1f} kWh", f"{r['change']:+.0%} vs today ({r['trend']})",
+              delta_color="inverse", help="Forecast by the trained model for tomorrow, 00:00 to 24:00.")
+    m3.metric(f"{proj['month']:%B} bill (expected)", f"{proj['projected_egp']:,.0f} EGP",
+              f"{proj['projected_egp'] - budget:+,.0f} EGP vs budget" if budget else None, delta_color="inverse",
+              help="Budget and tariff come from the Bill & Budget page.")
+    st.caption(f"{r['note']} Readings until {now:%H:%M} today ({now:%d %b %Y}); the model ({res['best_name']}) "
+               "forecasts the rest of today and tomorrow.")
+
+    texts = {"sms": as_sms(r), "whatsapp": as_whatsapp(r), "email": as_email(r)}
+    st.subheader("Preview")
+    t_wa, t_sms, t_mail = st.tabs(["WhatsApp", "SMS", "Gmail"])
+    with t_wa:
+        st.code(texts["whatsapp"], language=None, wrap_lines=True)
+    with t_sms:
+        st.code(texts["sms"], language=None, wrap_lines=True)
+        st.caption(f"{len(texts['sms'])} characters ≈ {math.ceil(len(texts['sms']) / 153)} SMS.")
+    with t_mail:
+        st.markdown(f"**Subject:** {texts['email'][0]}")
+        with st.container(border=True):
+            st.html(texts["email"][2])
+
+    sub = {"frequency": st.session_state.rep_freq, "channels": channels, "email": st.session_state.rep_email.strip(),
+           "phone": st.session_state.rep_phone.strip(), "whatsapp_apikey": st.session_state.rep_wa_key.strip(),
+           "budget": budget}
+    b1, b2 = st.columns(2)
+    send = b1.button("Send me one now", type="primary", icon=":material/send:", width="stretch", disabled=not channels)
+    save = b2.button("Save my choice", icon=":material/save:", width="stretch", disabled=not channels)
+    if send:
+        if st.session_state.get("reports_sent", 0) >= MAX_SENDS_PER_SESSION:
+            st.error(f"You can send {MAX_SENDS_PER_SESSION} test reports per visit. Log in again to send more.")
+        else:
+            st.session_state.reports_sent = st.session_state.get("reports_sent", 0) + 1
+            with st.spinner("Sending..."):
+                results = notify.send_report(sub, texts, *report_senders())
+            for ok, msg in results:
+                (st.success if ok else st.error)(msg, icon="✅" if ok else "❌")
+    if save:
+        notify.save_subscription(auth.current_user()["name"], sub)
+        st.success(f"Saved: {sub['frequency'].lower()} report by {', '.join(channels)}.", icon="✅")
+    st.info("Automatic sending: GitHub Actions sends the reports every evening at about 8 PM (Cairo time). On this "
+            "free version the admin adds saved choices to the schedule list. Saved choices may be reset when the "
+            "online server restarts.", icon="🗓️")
+
+    if auth.is_admin():
+        with st.expander("Schedule list (admin only: it has phone numbers and keys)"):
+            subs = notify.load_subscriptions()
+            if subs:
+                st.code(json.dumps(subs, indent=1), language="json")
+                st.caption("Copy all of it into the GitHub secret REPORT_SUBSCRIBERS (repo → Settings → Secrets and "
+                           "variables → Actions); GitHub then sends these reports on schedule.")
+            else:
+                st.caption("Nobody has saved a choice yet.")
+
+
 def render_home():
     st.title(f"⚡ {APP_NAME}")
     st.caption(
@@ -1111,6 +1240,7 @@ def render_about():
                 ("Pipeline monitoring", "✅ Needs Airflow running", "Pipeline monitor"),
                 ("Login with roles, light / dark theme", "✅ Done", "Sidebar"),
                 ("Bill in EGP, budget alerts, saving assistant", "✅ Done", "Bill & Budget"),
+                ("Daily / weekly / monthly reports by Gmail, WhatsApp, SMS", "✅ Done (sending needs keys)", "Reports"),
             ],
             columns=["Feature", "Status", "Page"],
         ).set_index("Feature")
@@ -1125,6 +1255,7 @@ def render_about():
 PAGES = {
     "Home": st.Page(render_home, title="Home", icon=":material/home:", url_path="home", default=True),
     "Bill & Budget": st.Page(render_bill, title="Bill & Budget", icon=":material/payments:", url_path="bill"),
+    "Reports": st.Page(render_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
     "Analytics": st.Page(render_analytics, title="Analytics", icon=":material/bar_chart:", url_path="analytics"),
     "Appliances": st.Page(
         render_appliances, title="Appliances", icon=":material/electrical_services:", url_path="appliances"
@@ -1141,7 +1272,7 @@ PAGES = {
 monitoring = [PAGES["Live"]] + ([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
 pg = st.navigation(
     {
-        "Overview": [PAGES["Home"], PAGES["Bill & Budget"]],
+        "Overview": [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Reports"]],
         "Analysis": [PAGES["Analytics"], PAGES["Appliances"]],
         "Machine learning": [PAGES["Forecast"], PAGES["Anomalies"], PAGES["Alerts"]],
         "Monitoring": monitoring,
@@ -1151,6 +1282,7 @@ pg = st.navigation(
 
 PAGE_INTRO = {
     "Bill & Budget": "Your bill in Egyptian pounds, the expected bill at month end, budget alerts and saving tips.",
+    "Reports": "Your energy report by Gmail, WhatsApp or SMS: today, tomorrow's forecast, the bill and tips.",
     "Analytics": "Explore consumption by household, date and day type.",
     "Appliances": "Where the energy goes inside the house (UCI sub-meters).",
     "Forecast": "Random Forest vs XGBoost vs a 'same hour yesterday' baseline, and the next 24 hours.",

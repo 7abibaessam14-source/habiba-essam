@@ -1,6 +1,7 @@
 # secrets - never upload
 .streamlit/secrets.toml
 .streamlit/app_users.json
+.streamlit/report_subscriptions.json
 .streamlit/*.tmp
 .env
 
