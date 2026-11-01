@@ -1,0 +1,27 @@
+# Runs every test_*_local.py after each upload to GitHub: a green tick = all tests pass, a red cross = one failed.
+# The tests use made-up data, so they need no secrets and no data files.
+name: Tests
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run the tests
+        run: |
+          for t in test_*_local.py; do
+            echo "::group::$t"
+            python "$t" | tee out.txt
+            echo "::endgroup::"
+            if grep -q "RESULT: FAIL" out.txt; then echo "::error::$t failed"; exit 1; fi
+          done
