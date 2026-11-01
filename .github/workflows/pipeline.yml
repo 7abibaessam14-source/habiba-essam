@@ -1,0 +1,57 @@
+# Weekly data pipeline: raw zone (data/) -> curated zone, same stages as the Azure Data Factory pipeline
+# (adf/adf_template.json) but free. Run it by hand: Actions tab -> Data pipeline -> Run workflow.
+# The curated files are kept for 30 days under the run's "Artifacts".
+name: Data pipeline
+
+on:
+  schedule:
+    - cron: "0 0 * * 5"  # every Friday 00:00 UTC = 02:00 in Cairo in winter
+  workflow_dispatch:
+
+jobs:
+  check_raw:
+    name: 1. Check raw zone
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install pandas==3.0.6 numpy==2.5.4
+      - run: python pipeline.py check-raw
+
+  transform:
+    name: 2. Clean + aggregate
+    needs: check_raw
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install pandas==3.0.6 numpy==2.5.4
+      - run: python pipeline.py transform
+      - uses: actions/upload-artifact@v4
+        with:
+          name: curated-zone
+          path: curated/
+          retention-days: 30
+
+  check_curated:
+    name: 3. Check curated zone
+    needs: transform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install pandas==3.0.6 numpy==2.5.4
+      - uses: actions/download-artifact@v4
+        with:
+          name: curated-zone
+          path: curated/
+      - run: python pipeline.py check-curated
