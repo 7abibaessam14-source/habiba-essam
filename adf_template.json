@@ -1,0 +1,210 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Smart Energy Monitor - Azure Data Factory: weekly pipeline that checks the raw zone, runs the two Synapse Spark notebooks (CSV + JSON) and checks the curated zone."
+  },
+  "parameters": {
+    "factoryName": { "type": "string", "defaultValue": "adf-smart-energy-habiba" },
+    "location": { "type": "string", "defaultValue": "[resourceGroup().location]" },
+    "synapseWorkspace": { "type": "string" },
+    "sparkPool": { "type": "string" },
+    "storageAccount": { "type": "string", "defaultValue": "powerconsumption2026" },
+    "csvNotebook": { "type": "string", "defaultValue": "Milestone2_CSV_Transformation" },
+    "jsonNotebook": { "type": "string", "defaultValue": "Milestone2_JSON_Transformation" }
+  },
+  "variables": {
+    "factoryId": "[resourceId('Microsoft.DataFactory/factories', parameters('factoryName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "name": "[parameters('factoryName')]",
+      "location": "[parameters('location')]",
+      "identity": { "type": "SystemAssigned" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/LS_DataLake')]",
+      "dependsOn": ["[variables('factoryId')]"],
+      "properties": {
+        "description": "Azure Data Lake Storage Gen2 (raw + curated zones), signed in with the factory's managed identity.",
+        "type": "AzureBlobFS",
+        "typeProperties": {
+          "url": "[concat('https://', parameters('storageAccount'), '.dfs.core.windows.net/')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/LS_Synapse')]",
+      "dependsOn": ["[variables('factoryId')]"],
+      "properties": {
+        "description": "The Synapse workspace that holds the Spark notebooks.",
+        "type": "AzureSynapseArtifacts",
+        "typeProperties": {
+          "endpoint": "[concat('https://', parameters('synapseWorkspace'), '.dev.azuresynapse.net')]",
+          "authentication": "MSI",
+          "workspaceResourceId": "[resourceId('Microsoft.Synapse/workspaces', parameters('synapseWorkspace'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/DS_RawZone')]",
+      "dependsOn": ["[concat(variables('factoryId'), '/linkedservices/LS_DataLake')]"],
+      "properties": {
+        "description": "The whole raw container.",
+        "linkedServiceName": { "referenceName": "LS_DataLake", "type": "LinkedServiceReference" },
+        "type": "Binary",
+        "typeProperties": {
+          "location": { "type": "AzureBlobFSLocation", "fileSystem": "raw" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/DS_CuratedFolder')]",
+      "dependsOn": ["[concat(variables('factoryId'), '/linkedservices/LS_DataLake')]"],
+      "properties": {
+        "description": "One output folder in the curated container.",
+        "linkedServiceName": { "referenceName": "LS_DataLake", "type": "LinkedServiceReference" },
+        "parameters": { "folder": { "type": "string" } },
+        "type": "Binary",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobFSLocation",
+            "fileSystem": "curated",
+            "folderPath": { "value": "@dataset().folder", "type": "Expression" }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/PL_SmartEnergy_Weekly')]",
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/linkedservices/LS_Synapse')]",
+        "[concat(variables('factoryId'), '/datasets/DS_RawZone')]",
+        "[concat(variables('factoryId'), '/datasets/DS_CuratedFolder')]"
+      ],
+      "properties": {
+        "description": "Check raw files -> run the CSV and JSON Spark notebooks in parallel -> check the curated output.",
+        "activities": [
+          {
+            "name": "CheckRawFiles",
+            "description": "Stop early if the raw container is empty.",
+            "type": "Validation",
+            "typeProperties": {
+              "dataset": { "referenceName": "DS_RawZone", "type": "DatasetReference" },
+              "childItems": true,
+              "timeout": "0.00:05:00",
+              "sleep": 30
+            }
+          },
+          {
+            "name": "RunCsvNotebook",
+            "description": "Clean the CSV smart-meter data and average it per household.",
+            "type": "SynapseNotebook",
+            "dependsOn": [{ "activity": "CheckRawFiles", "dependencyConditions": ["Succeeded"] }],
+            "policy": { "timeout": "0.02:00:00", "retry": 1, "retryIntervalInSeconds": 120 },
+            "linkedServiceName": { "referenceName": "LS_Synapse", "type": "LinkedServiceReference" },
+            "typeProperties": {
+              "notebook": { "referenceName": "[parameters('csvNotebook')]", "type": "NotebookReference" },
+              "sparkPool": { "referenceName": "[parameters('sparkPool')]", "type": "BigDataPoolParametrizationReference" }
+            }
+          },
+          {
+            "name": "RunJsonNotebook",
+            "description": "Clean the JSON smart-meter data and average it per household.",
+            "type": "SynapseNotebook",
+            "dependsOn": [{ "activity": "CheckRawFiles", "dependencyConditions": ["Succeeded"] }],
+            "policy": { "timeout": "0.02:00:00", "retry": 1, "retryIntervalInSeconds": 120 },
+            "linkedServiceName": { "referenceName": "LS_Synapse", "type": "LinkedServiceReference" },
+            "typeProperties": {
+              "notebook": { "referenceName": "[parameters('jsonNotebook')]", "type": "NotebookReference" },
+              "sparkPool": { "referenceName": "[parameters('sparkPool')]", "type": "BigDataPoolParametrizationReference" }
+            }
+          },
+          {
+            "name": "CheckCleanedData",
+            "type": "Validation",
+            "dependsOn": [{ "activity": "RunCsvNotebook", "dependencyConditions": ["Succeeded"] }],
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "DS_CuratedFolder", "type": "DatasetReference",
+                "parameters": { "folder": "cleaned_power_data" }
+              },
+              "childItems": true,
+              "timeout": "0.00:05:00",
+              "sleep": 30
+            }
+          },
+          {
+            "name": "CheckAverages",
+            "type": "Validation",
+            "dependsOn": [{ "activity": "RunCsvNotebook", "dependencyConditions": ["Succeeded"] }],
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "DS_CuratedFolder", "type": "DatasetReference",
+                "parameters": { "folder": "avg_consumption" }
+              },
+              "childItems": true,
+              "timeout": "0.00:05:00",
+              "sleep": 30
+            }
+          },
+          {
+            "name": "CheckJsonData",
+            "type": "Validation",
+            "dependsOn": [{ "activity": "RunJsonNotebook", "dependencyConditions": ["Succeeded"] }],
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "DS_CuratedFolder", "type": "DatasetReference",
+                "parameters": { "folder": "json_cleaned_data" }
+              },
+              "childItems": true,
+              "timeout": "0.00:05:00",
+              "sleep": 30
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('factoryName'), '/TR_Weekly')]",
+      "dependsOn": ["[concat(variables('factoryId'), '/pipelines/PL_SmartEnergy_Weekly')]"],
+      "properties": {
+        "description": "Every Friday at 02:00 Cairo time. Created stopped; start it when you are ready (each run uses Azure credit).",
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+          "recurrence": {
+            "frequency": "Week",
+            "interval": 1,
+            "startTime": "2026-11-06T02:00:00",
+            "timeZone": "Egypt Standard Time",
+            "schedule": { "weekDays": ["Friday"], "hours": [2], "minutes": [0] }
+          }
+        },
+        "pipelines": [
+          { "pipelineReference": { "referenceName": "PL_SmartEnergy_Weekly", "type": "PipelineReference" } }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "factoryPrincipalId": {
+      "type": "string",
+      "value": "[reference(variables('factoryId'), '2018-06-01', 'Full').identity.principalId]"
+    }
+  }
+}

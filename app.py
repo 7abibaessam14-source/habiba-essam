@@ -1294,7 +1294,7 @@ digraph {
   raw     [label="Data Lake\\nraw"];
   spark   [label="Spark\\ncleaning"];
   curated [label="Data Lake\\ncurated"];
-  airflow [label="Airflow\\n(ADF: in progress)"];
+  airflow [label="Airflow / ADF\\n(weekly pipeline)"];
   snow    [label="Snowflake\\nFACT + DIM"];
   app     [label="Streamlit\\nML · alerts · live"];
   uci     [label="UCI file\\n(appliances)"];
@@ -1336,7 +1336,8 @@ def render_about():
                 ("Appliance-level analysis", "✅ Done (UCI data)", "Appliances"),
                 ("Consumption alerts", "✅ Done (email not tested yet)", "Alerts"),
                 ("Real-time monitoring", "✅ Simulated stream (replay)", "Live"),
-                ("Azure Data Factory", "🔄 In progress", "-"),
+                ("Azure Data Factory", "📄 Template ready (needs an Azure subscription)", "adf/"),
+                ("Weekly data pipeline raw → curated", "✅ Runs free on GitHub Actions", "pipeline.py"),
                 ("Pipeline monitoring", "✅ Needs Airflow running", "Pipeline monitor"),
                 ("Login with roles, light / dark theme", "✅ Done", "Sidebar"),
                 ("Bill in EGP, budget alerts, saving assistant", "✅ Done", "Bill & Budget"),
