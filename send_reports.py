@@ -7,7 +7,8 @@ send_reports.py - sends the scheduled energy reports. GitHub Actions runs it eve
 It trains the model on the data in ./data (the zipped UCI file online), then for every subscriber whose
 report is due (Daily: every day, Weekly: Saturdays, Monthly: the 1st) builds the report for today's date
 and sends it. Settings come from environment variables (GitHub -> Settings -> Secrets and variables -> Actions):
-  REPORT_SUBSCRIBERS   the JSON from the app's Reports page (admin box), or a list of the same entries:
+  SUPABASE_URL, SUPABASE_KEY   the database: everyone who clicked "Save my choice" gets their report
+  REPORT_SUBSCRIBERS   (without the database) the JSON from the app's Reports page (admin box), or a list:
                        {"habiba": {"frequency": "Daily", "channels": ["Gmail", "WhatsApp"], "email": "...",
                                    "phone": "+20...", "whatsapp_apikey": "...", "budget": 600}}
   SMTP_USER, SMTP_PASSWORD (Gmail App Password), optional SMTP_HOST, SMTP_PORT
@@ -22,6 +23,7 @@ import sys
 from pathlib import Path
 
 from ml_models import add_features, to_hourly, train_and_compare
+import store
 from notify import send_report
 from reports import as_email, as_sms, as_whatsapp, build_report, is_due, now_local
 from uci_loader import load_uci, uci_path
@@ -47,6 +49,14 @@ def subscribers_from_env():
     return list(data)
 
 
+def subscribers():
+    """REPORT_SUBSCRIBERS plus the choices saved in the Supabase database (the database wins for the same name)."""
+    subs = {s.get("name", f"#{i}"): s for i, s in enumerate(subscribers_from_env())}
+    if store.supabase_config():
+        subs.update({name: {"name": name, **sub} for name, sub in store.load_subscriptions().items()})
+    return list(subs.values())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="send to everyone now, whatever their frequency")
@@ -54,7 +64,7 @@ def main():
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
-    subs = subscribers_from_env()
+    subs = subscribers()
     if not subs and args.dry_run:
         subs = [{"name": "example", "frequency": f, "channels": ["Gmail", "WhatsApp", "SMS"], "budget": 600}
                 for f in ("Daily", "Weekly", "Monthly")]
@@ -85,7 +95,7 @@ def main():
     failed = 0
     for s in due:
         r = build_report(hourly, res["best_model"], s.get("frequency", "Daily"), now=now,
-                         budget_egp=float(s.get("budget") or 0) or None, fact=fact)
+                         budget_egp=float(s.get("budget") or 0) or None, fact=fact, lang=s.get("language", "en"))
         texts = {"sms": as_sms(r), "whatsapp": as_whatsapp(r), "email": as_email(r)}
         print(f"\n--- {s.get('name', '?')}: {r['frequency']} by {', '.join(s.get('channels', []))} "
               f"({mask(s.get('email'))} {mask(s.get('phone'))})")

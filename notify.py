@@ -1,5 +1,5 @@
 """
-notify.py - sends a report by Gmail, WhatsApp or SMS, and keeps the report choices people save in the app.
+notify.py - sends a report by Gmail, WhatsApp or SMS (the saved report choices are kept by store.py).
 
 Every sender returns (ok, message) and never raises. The keys come from secrets.toml / GitHub Secrets, never
 from the code:
@@ -11,20 +11,14 @@ from the code:
 Error messages never include the URL or the keys.
 """
 
-import json
 import re
 import smtplib
-import threading
-import time
 from email.message import EmailMessage
-from pathlib import Path
 
 import requests
 
 EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 PHONE_RE = re.compile(r"\+\d{8,15}")  # international format, e.g. +201001234567
-SUBSCRIPTIONS_FILE = Path(__file__).parent / ".streamlit" / "report_subscriptions.json"  # never uploaded
-_file_lock = threading.Lock()
 
 
 def send_gmail(smtp_cfg, to, subject, text, html=None):
@@ -99,22 +93,3 @@ def send_report(sub, texts, smtp_cfg=None, twilio_cfg=None):
                        else (False, "SMS: the app has no [twilio] settings yet."))
     return out
 
-
-def load_subscriptions(path=SUBSCRIPTIONS_FILE):
-    """{username: {"frequency", "channels", "email", "phone", "whatsapp_apikey", "budget", "saved"}}."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def save_subscription(name, sub, path=SUBSCRIPTIONS_FILE):
-    with _file_lock:
-        subs = load_subscriptions(path)
-        subs[name] = {**sub, "saved": time.strftime("%Y-%m-%d %H:%M")}
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(subs, indent=1), encoding="utf-8")
-        tmp.replace(p)  # write-then-rename: the file is never left half written

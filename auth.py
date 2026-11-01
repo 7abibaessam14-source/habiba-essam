@@ -21,8 +21,8 @@ account can sign in and gets the viewer role; emails listed in [roles] admin_ema
     admin_emails = ["you@gmail.com"]
 
 Create account: when login is on, anyone can also create a username + password on the login page. These
-accounts are always "viewer" and are saved (hashed) in .streamlit/app_users.json, which is never uploaded.
-On Streamlit Cloud that file is lost when the app restarts, so keeping them online needs a database.
+accounts are always "viewer" and are saved (hashed) by store.py: in the Supabase database when [supabase] is
+set, otherwise in .streamlit/app_users.json (never uploaded; lost when Streamlit Cloud restarts).
 Turn it off with:   [signup]  enabled = false
 
 No users and no Google -> login is off (handy on your own PC) and the app shows a "Login is off" note.
@@ -34,24 +34,22 @@ browser session: reloading the page logs you out.
 import base64
 import hashlib
 import hmac
-import json
 import os
 import re
-import threading
 import time
-from pathlib import Path
 
 import streamlit as st
+
+import store
+from i18n import T, language_switch
 
 ITERATIONS = 200_000
 ROLES = ("admin", "viewer")
 MAX_TRIES = 5  # wrong passwords in a row before a short lock
 LOCK_SECONDS = 60
-USERS_FILE = Path(__file__).parent / ".streamlit" / "app_users.json"  # accounts made on the login page
 USERNAME_RE = re.compile(r"[A-Za-z0-9_-]{3,20}")
 MIN_PASSWORD = 8
 MAX_SIGNUPS_PER_SESSION = 3
-_users_file_lock = threading.Lock()  # two people signing up at the same moment must not overwrite each other
 
 
 def hash_password(password, iterations=ITERATIONS):
@@ -87,21 +85,12 @@ def _secrets_section(name):
         return {}
 
 
-def file_users(path=USERS_FILE):
-    """Accounts created on the login page: {username: {"password_hash", "role", "created"}}."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def signup_enabled():
     return login_enabled() and bool(_secrets_section("signup").get("enabled", True))
 
 
-def create_user(name, password, password2, path=USERS_FILE):
-    """Saves a new viewer account. Returns (ok, message)."""
+def create_user(name, password, password2, path=None):
+    """Saves a new viewer account (store.py: database or file; `path` forces that file). Returns (ok, message)."""
     name = name.strip()
     if not USERNAME_RE.fullmatch(name):
         return False, "Username: 3 to 20 letters, digits, _ or -."
@@ -111,26 +100,19 @@ def create_user(name, password, password2, path=USERS_FILE):
         return False, "The two passwords are different."
     if password.lower() == name.lower():
         return False, "The password must not be the same as the username."
-    with _users_file_lock:
-        users = file_users(path)
-        if name.lower() in {u.lower() for u in list(users) + list(configured_users())}:
-            return False, "This username is taken. Please choose another one."
-        users[name] = {"password_hash": hash_password(password), "role": "viewer", "created": time.strftime("%Y-%m-%d %H:%M")}
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(users, indent=1), encoding="utf-8")
-        tmp.replace(p)  # write-then-rename: the file is never left half written
-    return True, "Account created."
+    if name.lower() in {u.lower() for u in configured_users()}:
+        return False, "This username is taken. Please choose another one."
+    record = {"password_hash": hash_password(password), "role": "viewer", "created": time.strftime("%Y-%m-%d %H:%M")}
+    return store.add_user(name, record, path)  # also refuses a name that is already taken
 
 
-def check_login(name, password, path=USERS_FILE):
+def check_login(name, password, path=None):
     """The role ('admin' / 'viewer') when the username and password are right, else None."""
     cfg = configured_users().get(name)
     if cfg:  # accounts in secrets.toml come first and keep their role
         role = cfg.get("role", "viewer")
         return (role if role in ROLES else "viewer") if verify_password(password, cfg.get("password_hash", "")) else None
-    cfg = file_users(path).get(name)
+    cfg = store.load_users(path).get(name)
     if cfg and verify_password(password, cfg.get("password_hash", "")):
         return "viewer"  # accounts made on the login page are always viewers
     return None
@@ -170,7 +152,10 @@ def is_admin():
 
 def logout():
     google = (current_user() or {}).get("google")
+    language = st.session_state.get("lang")
     st.session_state.clear()  # forget the user and everything they did (Live replay, settings, ...)
+    if language:
+        st.session_state.lang = language  # but keep the language they chose
     if google:
         st.logout()  # also removes the Google login cookie
 
@@ -178,18 +163,19 @@ def logout():
 def login_page(title, subtitle):
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
+        language_switch()
         st.header(title)
-        st.caption(subtitle)
+        st.caption(T(subtitle))
         if google_enabled():
-            if st.button("Sign in with Google", icon=":material/login:", type="primary", width="stretch"):
+            if st.button(T("Sign in with Google"), icon=":material/login:", type="primary", width="stretch"):
                 st.login("google")
-            st.caption("Anyone with a Google account can sign in.")
+            st.caption(T("Anyone with a Google account can sign in."))
         if not configured_users() and not signup_enabled():
             return
         if google_enabled():
-            st.markdown("**or** use a username and password")
+            st.markdown(T("**or** use a username and password"))
         if signup_enabled():
-            tab_login, tab_new = st.tabs(["Log in", "Create account"])
+            tab_login, tab_new = st.tabs([T("Log in"), T("Create account")])
             with tab_login:
                 _login_form()
             with tab_new:
@@ -200,13 +186,13 @@ def login_page(title, subtitle):
 
 def _login_form():
     with st.form("login"):
-        name = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Log in", type="secondary" if google_enabled() else "primary", width="stretch")
+        name = st.text_input(T("Username"))
+        password = st.text_input(T("Password"), type="password")
+        submitted = st.form_submit_button(T("Log in"), type="secondary" if google_enabled() else "primary", width="stretch")
     if not submitted:
         return
     if time.time() < st.session_state.get("login_locked_until", 0):
-        st.error("Too many wrong tries. Wait a minute, then try again.")
+        st.error(T("Too many wrong tries. Wait a minute, then try again."))
         return
 
     role = check_login(name.strip(), password)
@@ -220,25 +206,26 @@ def _login_form():
     if fails >= MAX_TRIES:
         st.session_state.login_locked_until = time.time() + LOCK_SECONDS
         st.session_state.login_fails = 0
-    st.error("Wrong username or password.")
+    st.error(T("Wrong username or password."))
 
 
 def _signup_form():
     with st.form("signup", clear_on_submit=False):
-        name = st.text_input("Choose a username", help="3 to 20 letters, digits, _ or -")
-        password = st.text_input("Choose a password", type="password", help=f"At least {MIN_PASSWORD} characters")
-        password2 = st.text_input("Repeat the password", type="password")
-        submitted = st.form_submit_button("Create account", width="stretch")
-    st.caption("Your password is stored hashed, never as plain text. New accounts can view every page except the "
-               "admin tools. On the free online version, new accounts may be reset when the server restarts.")
+        name = st.text_input(T("Choose a username"), help=T("3 to 20 letters, digits, _ or -"))
+        password = st.text_input(T("Choose a password"), type="password", help=T("At least {n} characters", n=MIN_PASSWORD))
+        password2 = st.text_input(T("Repeat the password"), type="password")
+        submitted = st.form_submit_button(T("Create account"), width="stretch")
+    stored = "Your password is stored hashed, never as plain text. New accounts can view every page except the admin tools."
+    st.caption(T(stored) if store.supabase_config() else
+               T(stored + " On the free online version, new accounts may be reset when the server restarts."))
     if not submitted:
         return
     if st.session_state.get("signups", 0) >= MAX_SIGNUPS_PER_SESSION:
-        st.error("Too many new accounts from this browser. Please use one of the accounts you created.")
+        st.error(T("Too many new accounts from this browser. Please use one of the accounts you created."))
         return
     ok, msg = create_user(name, password, password2)
     if not ok:
-        st.error(msg)
+        st.error(T(msg))
         return
     st.session_state.signups = st.session_state.get("signups", 0) + 1
     st.session_state.auth_user = {"name": name.strip(), "role": "viewer"}  # log the new user straight in

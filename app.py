@@ -44,10 +44,15 @@ from live import LiveReplay
 from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
                        train_and_compare)
 import notify
-from reports import CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, now_local
+import store
+from i18n import RTL_CSS, TRANSLATED_PAGES, T, day_month, is_ar, language_switch, month_name, month_year
+from reports import (CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, note, now_local, sms_parts,
+                     today_series)
 
 APP_NAME = "Smart Energy Monitor"
 st.set_page_config(page_title=APP_NAME, page_icon="⚡", layout="wide")
+st.session_state.setdefault("lang", "en")  # English / Arabic (i18n.py), chosen on the login page or in the sidebar
+st.session_state["lang"] = st.session_state["lang"]
 
 ALL_LABEL = "All households (average)"
 ASSETS = Path(__file__).parent / "assets"
@@ -271,6 +276,8 @@ if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which
     # Streamlit would otherwise keep showing) and a link like /live opens that page after logging in.
     def _login():
+        if is_ar():
+            st.markdown(RTL_CSS, unsafe_allow_html=True)
         auth.login_page(f"⚡ {APP_NAME}", "Smart-meter electricity pipeline - graduation project")
 
     st.navigation(
@@ -345,7 +352,7 @@ def household_label():
 
 # ---- Bill & Budget settings (kept across pages, like the ML settings) -----------
 TIER_LABELS = ["0–50", "51–100", "101–200", "201–350", "351–650", "651–1000", "over 1000"]
-BILL_DEFAULTS = {"bill_mode": "Egyptian tiers (Aug 2026)", "bill_price": 2.0, "bill_budget": 500.0}
+BILL_DEFAULTS = {"bill_mode": "Egyptian tiers (Aug 2026)", "bill_price": 2.0, "bill_budget": 500.0, "bill_today": True}
 BILL_DEFAULTS.update({f"tier_{i}": price for i, (_, price) in enumerate(EGYPT_TIERS)})
 if data_error is None:
     BILL_DEFAULTS["bill_asof"] = fact_df["DateTime"].max().date()  # the data is historical: start at its last day
@@ -361,23 +368,42 @@ def bill_tariff():
     return [(upper, float(st.session_state[f"tier_{i}"])) for i, (upper, _) in enumerate(EGYPT_TIERS)], None
 
 
+@st.cache_data(max_entries=20, show_spinner="Reading today's meter...")
+def today_for(household_key, best_name, hour, _hourly, _res):
+    # today's simulated meter (reports.today_series), recomputed when a new hour of readings "arrives"
+    return today_series(_hourly, _res["best_model"], hour)
+
+
 def bill_summary(hourly, res):
-    """Month-end projection for the 'as of' day: the model forecasts the next 24 hours, typical days the rest."""
+    """
+    (month projection, tiers, flat price, hourly series used, offset) for the Bill page and Home.
+    Today (default): the history replayed on today's date, the model for the rest of today and tomorrow.
+    Otherwise the 'as of' day picked in the data. The model forecasts the next 24 hours, typical days the rest.
+    """
     tiers, flat = bill_tariff()
+    if st.session_state.bill_today:
+        now = now_local().floor("h")
+        try:
+            series, fc, offset = today_for(ml_choice, res["best_name"], now, hourly, res)
+            nxt = float(fc.loc[now.normalize() + pd.Timedelta(days=1):].sum())
+            return month_projection(series, now.normalize(), nxt, tiers, flat), tiers, flat, series, offset
+        except Exception:  # too little history to replay: use the day picked in the data instead
+            pass
     as_of = pd.Timestamp(st.session_state.bill_asof)
     try:
         nxt = float(forecast_next(res["best_model"], hourly.loc[: as_of + pd.Timedelta(hours=23)], steps=24).sum())
     except Exception:  # too little history before that day
         nxt = None
-    return month_projection(hourly, as_of, nxt, tiers, flat), tiers, flat
+    return month_projection(hourly, as_of, nxt, tiers, flat), tiers, flat, hourly, pd.Timedelta(0)
 
 
-def appliance_month_kwh(proj):
+def appliance_month_kwh(proj, offset=pd.Timedelta(0)):
     """{appliance: kWh} measured this month up to the 'as of' day, when the data has sub-meters (UCI)."""
     cols = list(APPLIANCE_COLUMNS)
     if not set(cols) <= set(fact_df.columns):
         return None
-    d = fact_df[(fact_df["DateTime"] >= proj["month"]) & (fact_df["DateTime"] < proj["as_of"] + pd.Timedelta(days=1))]
+    t = fact_df["DateTime"] + offset  # offset: how far the history was moved to replay it on today's date
+    d = fact_df[(t >= proj["month"]) & (t < proj["as_of"] + pd.Timedelta(days=1))]
     if ml_choice != ALL_LABEL:
         d = d[d["LCLid"] == ml_choice]
     s = d[cols].sum()
@@ -390,25 +416,26 @@ def show_tips(tips):
 
 
 # ---- Reports settings: the user's saved choice first, else the defaults -------------
-_saved_report = notify.load_subscriptions().get(auth.current_user()["name"], {})
-REPORT_DEFAULTS = {
-    "rep_freq": _saved_report.get("frequency", "Daily"),
-    "rep_channels": _saved_report.get("channels", ["Gmail"]),
-    "rep_email": _saved_report.get("email", auth.current_user().get("email", "")),
-    "rep_phone": _saved_report.get("phone", ""),
-    "rep_wa_key": _saved_report.get("whatsapp_apikey", ""),
-}
-for _k, _v in REPORT_DEFAULTS.items():
-    st.session_state.setdefault(_k, _v)
+if "rep_freq" not in st.session_state:  # once per visit: the saved choice may come from the database
+    _saved_report = store.load_subscriptions().get(auth.current_user()["name"], {})
+    st.session_state.update({
+        "rep_freq": _saved_report.get("frequency", "Daily"),
+        "rep_channels": _saved_report.get("channels", ["Gmail"]),
+        "rep_email": _saved_report.get("email", auth.current_user().get("email", "")),
+        "rep_phone": _saved_report.get("phone", ""),
+        "rep_wa_key": _saved_report.get("whatsapp_apikey", ""),
+        "rep_lang": _saved_report.get("language", st.session_state.lang),
+    })
+for _k in ("rep_freq", "rep_channels", "rep_email", "rep_phone", "rep_wa_key", "rep_lang"):
     st.session_state[_k] = st.session_state[_k]
 MAX_SENDS_PER_SESSION = 3  # "Send me one now" uses the app's Gmail / Twilio account, so keep it small
 
 
 @st.cache_data(max_entries=30, show_spinner="Writing the report...")
-def report_for(household_key, best_name, frequency, hour, tiers, flat, budget, _hourly, _res, _fact):
-    # cached per household, frequency, tariff and hour: the report changes when a new hour of readings arrives
+def report_for(household_key, best_name, frequency, hour, tiers, flat, budget, lang, _hourly, _res, _fact):
+    # cached per household, frequency, tariff, language and hour: the report changes when a new hour of readings arrives
     return build_report(_hourly, _res["best_model"], frequency, now=hour, tiers=tiers, flat_price=flat,
-                        budget_egp=budget, fact=_fact)
+                        budget_egp=budget, fact=_fact, lang=lang)
 
 
 def report_senders():
@@ -934,129 +961,143 @@ def render_bill():
     try:
         hourly, res = get_ml()
     except Exception as e:
-        st.warning(f"Could not train the models for this selection: {e}")
+        st.warning(T("Could not train the models for this selection: {e}", e=e))
         return
     dmin, dmax = hourly.dropna().index.min().date(), hourly.dropna().index.max().date()
+    egp, kwh_unit = T("EGP"), T("kWh")
 
     c1, c2, c3 = st.columns([1.4, 1, 1])
-    c1.radio("Tariff", ["Egyptian tiers (Aug 2026)", "Fixed price per kWh"], key="bill_mode", horizontal=True)
-    c2.number_input("Monthly budget (EGP)", min_value=0.0, step=50.0, key="bill_budget")
-    c3.date_input("Month of (as of this day)", min_value=dmin, max_value=dmax, key="bill_asof",
-                  help="The data is historical, so pick the day that counts as 'today'.")
+    c1.radio(T("Tariff"), ["Egyptian tiers (Aug 2026)", "Fixed price per kWh"], key="bill_mode", horizontal=True,
+             format_func=T)
+    c2.number_input(T("Monthly budget (EGP)"), min_value=0.0, step=50.0, key="bill_budget")
+    with c3:
+        st.toggle(T("Today (live simulation)"), key="bill_today",
+                  help=T("On: the meter readings are replayed on today's date and the model forecasts the rest. "
+                         "Off: pick a day in the historical data."))
+        if not st.session_state.bill_today:
+            st.date_input(T("Month of (as of this day)"), min_value=dmin, max_value=dmax, key="bill_asof",
+                          help=T("The data is historical, so pick the day that counts as 'today'."))
     if st.session_state.bill_mode.startswith("Fixed"):
-        st.number_input("Price (EGP per kWh)", min_value=0.05, step=0.05, key="bill_price")
+        st.number_input(T("Price (EGP per kWh)"), min_value=0.05, step=0.05, key="bill_price")
     else:
-        with st.expander("Tariff tiers (EGP per kWh) - edit them if the government changes the prices"):
+        with st.expander(T("Tariff tiers (EGP per kWh) - edit them if the government changes the prices")):
             for box, (i, label) in zip(st.columns(len(TIER_LABELS)), enumerate(TIER_LABELS)):
-                box.number_input(f"{label} kWh", min_value=0.0, step=0.01, format="%.2f", key=f"tier_{i}")
+                box.number_input(f"{label} {kwh_unit}", min_value=0.0, step=0.01, format="%.2f", key=f"tier_{i}")
 
-    proj, tiers, flat = bill_summary(hourly, res)
+    proj, tiers, flat, series, offset = bill_summary(hourly, res)
     budget = float(st.session_state.bill_budget)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("This month so far", f"{proj['used_egp']:,.0f} EGP", f"{proj['used_kwh']:,.0f} kWh", delta_color="off")
-    m2.metric("Expected at month end", f"{proj['projected_egp']:,.0f} EGP",
-              f"{proj['low_egp']:,.0f}–{proj['high_egp']:,.0f} EGP", delta_color="off",
-              help="The range shows how much your daily use varied in the last 28 days.")
+    m1.metric(T("This month so far"), f"{proj['used_egp']:,.0f} {egp}", f"{proj['used_kwh']:,.0f} {kwh_unit}",
+              delta_color="off")
+    m2.metric(T("Expected at month end"), f"{proj['projected_egp']:,.0f} {egp}",
+              f"{proj['low_egp']:,.0f}–{proj['high_egp']:,.0f} {egp}", delta_color="off",
+              help=T("The range shows how much your daily use varied in the last 28 days."))
     if proj["prev_egp"]:
-        m3.metric("Last month", f"{proj['prev_egp']:,.0f} EGP",
-                  f"{(proj['projected_egp'] - proj['prev_egp']) / proj['prev_egp']:+.0%} this month", delta_color="inverse")
+        m3.metric(T("Last month"), f"{proj['prev_egp']:,.0f} {egp}",
+                  T("{x} this month", x=f"{(proj['projected_egp'] - proj['prev_egp']) / proj['prev_egp']:+.0%}"),
+                  delta_color="inverse")
     else:
-        m3.metric("Last month", "—", help="Not enough data for last month.")
+        m3.metric(T("Last month"), "—", help=T("Not enough data for last month."))
     if budget > 0:
         left = budget - proj["projected_egp"]
-        m4.metric("Budget", f"{budget:,.0f} EGP", f"{left:,.0f} EGP left" if left >= 0 else f"{-left:,.0f} EGP over",
+        m4.metric(T("Budget"), f"{budget:,.0f} {egp}",
+                  T("{x} EGP left", x=f"{left:,.0f}") if left >= 0 else T("{x} EGP over", x=f"{-left:,.0f}"),
                   delta_color="normal" if left >= 0 else "inverse")
         if left < 0:
-            st.error(f"Budget alert: the expected bill ({proj['projected_egp']:,.0f} EGP) is over your budget "
-                     f"of {budget:,.0f} EGP.", icon="🚨")
+            st.error(T("Budget alert: the expected bill ({a} EGP) is over your budget of {b} EGP.",
+                       a=f"{proj['projected_egp']:,.0f}", b=f"{budget:,.0f}"), icon="🚨")
         else:
-            st.success(f"On track: the expected bill is {left:,.0f} EGP under your budget.", icon="✅")
+            st.success(T("On track: the expected bill is {x} EGP under your budget.", x=f"{left:,.0f}"), icon="✅")
     if proj["history_days"] < 28:
-        st.info(f"Experimental forecast: only {proj['history_days']} days of history before this day, "
-                "so the month-end value is less certain.", icon="🧪")
-    st.caption(
-        f"{proj['month']:%B %Y}, as of {proj['as_of']:%d %b}: {proj['remaining_days']} days left. Estimate only: each "
-        "kWh is priced at its tier's price; real bills can add fees. Tomorrow uses the model's 24-hour forecast, "
-        "the other days your average day."
-    )
+        st.info(T("Experimental forecast: only {n} days of history before this day, so the month-end value is "
+                  "less certain.", n=proj["history_days"]), icon="🧪")
+    st.caption(T("{month}, as of {day}: {n} days left. Estimate only: each kWh is priced at its tier's price; real "
+                 "bills can add fees. Tomorrow uses the model's 24-hour forecast, the other days your average day.",
+                 month=month_year(proj["month"]), day=day_month(proj["as_of"]), n=proj["remaining_days"]))
     month_co2 = co2_kg(proj["projected_kwh"])
-    st.markdown(f"🌍 **Carbon footprint:** about **{month_co2:,.0f} kg CO₂** this month "
-                f"({co2_kg(proj['used_kwh']):,.0f} kg so far). Absorbing it would take about "
-                f"**{month_co2 * 12 / CO2_KG_PER_TREE_YEAR:,.0f} trees** a year.",
-                help=f"Estimate: {CO2_KG_PER_KWH} kg CO₂ per kWh for Egypt's mostly natural-gas power, "
-                     f"one tree absorbs about {CO2_KG_PER_TREE_YEAR} kg CO₂ a year.")
+    st.markdown(T("🌍 **Carbon footprint:** about **{m} kg CO₂** this month ({u} kg so far). Absorbing it would take "
+                  "about **{t} trees** a year.", m=f"{month_co2:,.0f}", u=f"{co2_kg(proj['used_kwh']):,.0f}",
+                  t=f"{month_co2 * 12 / CO2_KG_PER_TREE_YEAR:,.0f}"),
+                help=T("Estimate: {f} kg CO₂ per kWh for Egypt's mostly natural-gas power, one tree absorbs about "
+                       "{t} kg CO₂ a year.", f=CO2_KG_PER_KWH, t=CO2_KG_PER_TREE_YEAR))
 
     # cumulative bill through the month: actual days, then expected days, against the budget
+    actual, expected = T("actual"), T("expected")
     daily = proj["daily"].fillna(0)
     rows, total = [], 0.0
     for day, kwh in daily.items():
         total += kwh
-        rows.append((day, bill_egp(total, tiers, flat), "actual"))
-    rows_exp = [(proj["as_of"], bill_egp(total, tiers, flat), "expected")]
+        rows.append((day, bill_egp(total, tiers, flat), actual))
+    rows_exp = [(proj["as_of"], bill_egp(total, tiers, flat), expected)]
     for k in range(1, proj["remaining_days"] + 1):
         total += (proj["projected_kwh"] - proj["used_kwh"]) / proj["remaining_days"]
-        rows_exp.append((proj["as_of"] + pd.Timedelta(days=k), bill_egp(total, tiers, flat), "expected"))
+        rows_exp.append((proj["as_of"] + pd.Timedelta(days=k), bill_egp(total, tiers, flat), expected))
     cum = pd.DataFrame(rows + rows_exp, columns=["day", "egp", "type"])
-    st.subheader("Bill through the month")
+    st.subheader(T("Bill through the month"))
     chart = alt.Chart(cum).mark_line(point=True).encode(
         x=alt.X("day:T", title=None),
-        y=alt.Y("egp:Q", title="EGP"),
-        color=alt.Color("type:N", scale=alt.Scale(domain=["actual", "expected"], range=ACTUAL_VS_MODEL)),
-        strokeDash=alt.StrokeDash("type:N", scale=alt.Scale(domain=["actual", "expected"], range=[[1, 0], [5, 3]])),
+        y=alt.Y("egp:Q", title=egp),
+        color=alt.Color("type:N", title=None, scale=alt.Scale(domain=[actual, expected], range=ACTUAL_VS_MODEL)),
+        strokeDash=alt.StrokeDash("type:N", title=None, scale=alt.Scale(domain=[actual, expected], range=[[1, 0], [5, 3]])),
         tooltip=["day:T", alt.Tooltip("egp:Q", format=",.0f")],
     )
     if budget > 0:
         chart = chart + alt.Chart(pd.DataFrame({"budget": [budget]})).mark_rule(color="red", strokeDash=[4, 3]).encode(y="budget:Q")
     st.altair_chart(chart, width="stretch")
-    st.caption("Red dashed line = your budget.")
+    st.caption(T("Red dashed line = your budget."))
 
-    st.subheader("Last 12 months")
-    months = hourly.loc[: proj["as_of"] + pd.Timedelta(hours=23)].resample("MS").sum(min_count=24 * 20).dropna().tail(12)
+    st.subheader(T("Last 12 months"))
+    months = series.loc[: proj["as_of"] + pd.Timedelta(hours=23)].resample("MS").sum(min_count=24 * 20).dropna().tail(12)
     hist = pd.DataFrame({"month": months.index, "kwh": months.values})
     hist["egp"] = [bill_egp(k, tiers, flat) for k in hist["kwh"]]
     st.altair_chart(
         alt.Chart(hist).mark_bar().encode(
-            x=alt.X("month:T", title=None, timeUnit="yearmonth"), y=alt.Y("egp:Q", title="EGP"),
+            x=alt.X("month:T", title=None, timeUnit="yearmonth"), y=alt.Y("egp:Q", title=egp),
             tooltip=[alt.Tooltip("month:T", timeUnit="yearmonth"), alt.Tooltip("kwh:Q", format=",.0f"),
                      alt.Tooltip("egp:Q", format=",.0f")],
         ),
         width="stretch",
     )
 
-    st.subheader("Where is my electricity going?")
-    measured = appliance_month_kwh(proj)
+    st.subheader(T("Where is my electricity going?"))
+    measured = appliance_month_kwh(proj, offset)
     if measured:
         tot = sum(measured.values())
+        col_app, col_kwh, col_share, col_cost = T("Appliance (measured)"), T("kWh this month"), T("Share"), T("Cost (EGP)")
         st.dataframe(
-            pd.DataFrame([(n, k, k / tot, proj["used_egp"] * k / tot) for n, k in measured.items()],
-                         columns=["Appliance (measured)", "kWh this month", "Share", "Cost (EGP)"]),
+            pd.DataFrame([(T(n), k, k / tot, proj["used_egp"] * k / tot) for n, k in measured.items()],
+                         columns=[col_app, col_kwh, col_share, col_cost]),
             hide_index=True, width="stretch",
-            column_config={"kWh this month": st.column_config.NumberColumn(format="%.0f"),
-                           "Share": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
-                           "Cost (EGP)": st.column_config.NumberColumn(format="%.0f")},
+            column_config={col_kwh: st.column_config.NumberColumn(format="%.0f"),
+                           col_share: st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+                           col_cost: st.column_config.NumberColumn(format="%.0f")},
         )
-        st.caption("Measured by the house's three sub-meters; 'Other' is everything they do not cover.")
-    st.markdown("**Estimate for your own devices** - tick what you have and set the power and hours "
-                "(a single meter cannot measure each device, so these are estimates):")
-    est = st.data_editor(APPLIANCE_ESTIMATE_DEFAULTS, hide_index=True, width="stretch", key="appliance_editor",
-                         column_config={"Power (W)": st.column_config.NumberColumn(min_value=0, step=10),
-                                        "Hours per day": st.column_config.NumberColumn(min_value=0.0, max_value=24.0, step=0.5)})
-    est = est[est["Have it"]].copy()
+        st.caption(T("Measured by the house's three sub-meters; 'Other' is everything they do not cover."))
+    st.markdown(T("**Estimate for your own devices** - tick what you have and set the power and hours "
+                  "(a single meter cannot measure each device, so these are estimates):"))
+    defaults = APPLIANCE_ESTIMATE_DEFAULTS.assign(Device=APPLIANCE_ESTIMATE_DEFAULTS["Device"].map(T))
+    defaults.columns = [T(c) for c in defaults.columns]
+    col_dev, col_have, col_w, col_h = defaults.columns
+    col_month, col_cost = T("kWh per month"), T("Cost (EGP)")
+    est = st.data_editor(defaults, hide_index=True, width="stretch", key=f"appliance_editor_{st.session_state.lang}",
+                         column_config={col_w: st.column_config.NumberColumn(min_value=0, step=10),
+                                        col_h: st.column_config.NumberColumn(min_value=0.0, max_value=24.0, step=0.5)})
+    est = est[est[col_have]].copy()
     if len(est):
-        est["kWh per month"] = est["Power (W)"] * est["Hours per day"] * proj["days_in_month"] / 1000
-        est_total = est["kWh per month"].sum()
-        est["Cost (EGP)"] = est["kWh per month"] / est_total * bill_egp(est_total, tiers, flat) if est_total else 0.0
-        st.dataframe(est[["Device", "kWh per month", "Cost (EGP)"]].sort_values("kWh per month", ascending=False),
+        est[col_month] = est[col_w] * est[col_h] * proj["days_in_month"] / 1000
+        est_total = est[col_month].sum()
+        est[col_cost] = est[col_month] / est_total * bill_egp(est_total, tiers, flat) if est_total else 0.0
+        st.dataframe(est[[col_dev, col_month, col_cost]].sort_values(col_month, ascending=False),
                      hide_index=True, width="stretch",
-                     column_config={"kWh per month": st.column_config.NumberColumn(format="%.0f"),
-                                    "Cost (EGP)": st.column_config.NumberColumn(format="%.0f")})
-        st.caption(f"Your devices add up to about {est_total:,.0f} kWh a month; the meter expects "
-                   f"{proj['projected_kwh']:,.0f} kWh for this month.")
+                     column_config={col_month: st.column_config.NumberColumn(format="%.0f"),
+                                    col_cost: st.column_config.NumberColumn(format="%.0f")})
+        st.caption(T("Your devices add up to about {a} kWh a month; the meter expects {b} kWh for this month.",
+                     a=f"{est_total:,.0f}", b=f"{proj['projected_kwh']:,.0f}"))
 
-    st.subheader("Energy-saving assistant")
-    show_tips(saving_tips(hourly, proj, budget or None, measured, tiers, flat))
-    st.caption("Tips are worked out from your own consumption, forecast and tariff.")
+    st.subheader(T("Energy-saving assistant"))
+    show_tips(saving_tips(series, proj, budget or None, measured, tiers, flat, st.session_state.lang))
+    st.caption(T("Tips are worked out from your own consumption, forecast and tariff."))
 
 
 CALLMEBOT_HELP = (
@@ -1069,146 +1110,170 @@ def render_reports():
     try:
         hourly, res = get_ml()
     except Exception as e:
-        st.warning(f"Could not train the models for this selection: {e}")
+        st.warning(T("Could not train the models for this selection: {e}", e=e))
         return
     tiers, flat = bill_tariff()
     budget = float(st.session_state.bill_budget) or None
+    egp, kwh_unit = T("EGP"), T("kWh")
 
-    c1, c2 = st.columns([1, 1.4])
-    c1.radio("How often", FREQUENCIES, key="rep_freq", horizontal=True,
-             help="Daily: every evening at about 8 PM (Cairo time). Weekly: Saturdays. Monthly: the 1st of the month.")
-    c2.multiselect("Send it by", CHANNELS, key="rep_channels")
+    c1, c2, c3 = st.columns([1.2, 1.4, 1])
+    c1.radio(T("How often"), FREQUENCIES, key="rep_freq", horizontal=True, format_func=T,
+             help=T("Daily: every evening at about 8 PM (Cairo time). Weekly: Saturdays. Monthly: the 1st of the month."))
+    c2.multiselect(T("Send it by"), CHANNELS, key="rep_channels", format_func=T)
+    c3.radio(T("Report language"), ["en", "ar"], key="rep_lang", horizontal=True,
+             format_func=lambda c: {"en": "English", "ar": "العربية"}[c])
     channels = st.session_state.rep_channels
     a, b, c = st.columns(3)
-    a.text_input("Gmail address", key="rep_email", disabled="Gmail" not in channels, placeholder="you@gmail.com")
-    b.text_input("Phone (with country code)", key="rep_phone", placeholder="+201001234567",
+    a.text_input(T("Gmail address"), key="rep_email", disabled="Gmail" not in channels, placeholder="you@gmail.com")
+    b.text_input(T("Phone (with country code)"), key="rep_phone", placeholder="+201001234567",
                  disabled=not {"WhatsApp", "SMS"} & set(channels))
-    c.text_input("WhatsApp key (CallMeBot)", key="rep_wa_key", type="password", disabled="WhatsApp" not in channels,
-                 help=CALLMEBOT_HELP)
+    c.text_input(T("WhatsApp key (CallMeBot)"), key="rep_wa_key", type="password", disabled="WhatsApp" not in channels,
+                 help=T("CALLMEBOT_HELP") if is_ar() else CALLMEBOT_HELP)
 
     now = now_local().floor("h")
     fact = fact_df if ml_choice == ALL_LABEL else fact_df[fact_df["LCLid"] == ml_choice]
     try:
-        r = report_for(ml_choice, res["best_name"], st.session_state.rep_freq, now, tiers, flat, budget, hourly, res, fact)
+        r = report_for(ml_choice, res["best_name"], st.session_state.rep_freq, now, tiers, flat, budget,
+                       st.session_state.rep_lang, hourly, res, fact)
     except Exception as e:
-        st.warning(f"Could not build the report: {e}")
+        st.warning(T("Could not build the report: {e}", e=e))
         return
     proj = r["proj"]
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Today (expected total)", f"{r['today_kwh']:.1f} kWh", f"≈ {r['today_egp']:,.0f} EGP", delta_color="off")
-    m2.metric("Tomorrow (forecast)", f"{r['tomorrow_kwh']:.1f} kWh", f"{r['change']:+.0%} vs today ({r['trend']})",
-              delta_color="inverse", help="Forecast by the trained model for tomorrow, 00:00 to 24:00.")
-    m3.metric(f"{proj['month']:%B} bill (expected)", f"{proj['projected_egp']:,.0f} EGP",
-              f"{proj['projected_egp'] - budget:+,.0f} EGP vs budget" if budget else None, delta_color="inverse",
-              help="Budget and tariff come from the Bill & Budget page.")
-    st.caption(f"{r['note']} Readings until {now:%H:%M} today ({now:%d %b %Y}); the model ({res['best_name']}) "
-               "forecasts the rest of today and tomorrow.")
+    m1.metric(T("Today (expected total)"), f"{r['today_kwh']:.1f} {kwh_unit}", f"≈ {r['today_egp']:,.0f} {egp}",
+              delta_color="off")
+    m2.metric(T("Tomorrow (forecast)"), f"{r['tomorrow_kwh']:.1f} {kwh_unit}",
+              T("{x} vs today ({trend})", x=f"{r['change']:+.0%}", trend=T(r["trend"])),
+              delta_color="inverse", help=T("Forecast by the trained model for tomorrow, 00:00 to 24:00."))
+    m3.metric(T("{month} bill (expected)", month=month_name(proj["month"])), f"{proj['projected_egp']:,.0f} {egp}",
+              T("{x} EGP vs budget", x=f"{proj['projected_egp'] - budget:+,.0f}") if budget else None,
+              delta_color="inverse", help=T("Budget and tariff come from the Bill & Budget page."))
+    st.caption(note({**r, "lang": st.session_state.lang}) + " " +
+               T("Readings until {time} today ({date}); the model ({model}) forecasts the rest of today and tomorrow.",
+                 time=f"{now:%H:%M}", date=f"{day_month(now)} {now.year}", model=res["best_name"]))
 
     texts = {"sms": as_sms(r), "whatsapp": as_whatsapp(r), "email": as_email(r)}
-    st.subheader("Preview")
-    t_wa, t_sms, t_mail = st.tabs(["WhatsApp", "SMS", "Gmail"])
+    st.subheader(T("Preview"))
+    t_wa, t_sms, t_mail = st.tabs([T("WhatsApp"), T("SMS"), "Gmail"])
     with t_wa:
         st.code(texts["whatsapp"], language=None, wrap_lines=True)
     with t_sms:
         st.code(texts["sms"], language=None, wrap_lines=True)
-        st.caption(f"{len(texts['sms'])} characters ≈ {math.ceil(len(texts['sms']) / 153)} SMS.")
+        st.caption(T("{n} characters ≈ {m} SMS.", n=len(texts["sms"]), m=sms_parts(texts["sms"])))
     with t_mail:
-        st.markdown(f"**Subject:** {texts['email'][0]}")
+        st.markdown(f"**{T('Subject')}:** {texts['email'][0]}")
         with st.container(border=True):
             st.html(texts["email"][2])
 
     sub = {"frequency": st.session_state.rep_freq, "channels": channels, "email": st.session_state.rep_email.strip(),
            "phone": st.session_state.rep_phone.strip(), "whatsapp_apikey": st.session_state.rep_wa_key.strip(),
-           "budget": budget}
+           "budget": budget, "language": st.session_state.rep_lang}
     b1, b2 = st.columns(2)
-    send = b1.button("Send me one now", type="primary", icon=":material/send:", width="stretch", disabled=not channels)
-    save = b2.button("Save my choice", icon=":material/save:", width="stretch", disabled=not channels)
+    send = b1.button(T("Send me one now"), type="primary", icon=":material/send:", width="stretch", disabled=not channels)
+    save = b2.button(T("Save my choice"), icon=":material/save:", width="stretch", disabled=not channels)
     if send:
         if st.session_state.get("reports_sent", 0) >= MAX_SENDS_PER_SESSION:
-            st.error(f"You can send {MAX_SENDS_PER_SESSION} test reports per visit. Log in again to send more.")
+            st.error(T("You can send {n} test reports per visit. Log in again to send more.", n=MAX_SENDS_PER_SESSION))
         else:
             st.session_state.reports_sent = st.session_state.get("reports_sent", 0) + 1
-            with st.spinner("Sending..."):
+            with st.spinner(T("Sending...")):
                 results = notify.send_report(sub, texts, *report_senders())
             for ok, msg in results:
                 (st.success if ok else st.error)(msg, icon="✅" if ok else "❌")
     if save:
-        notify.save_subscription(auth.current_user()["name"], sub)
-        st.success(f"Saved: {sub['frequency'].lower()} report by {', '.join(channels)}.", icon="✅")
-    st.info("Automatic sending: GitHub Actions sends the reports every evening at about 8 PM (Cairo time). On this "
-            "free version the admin adds saved choices to the schedule list. Saved choices may be reset when the "
-            "online server restarts.", icon="🗓️")
+        ok, msg = store.save_subscription(auth.current_user()["name"], sub)
+        if ok:
+            st.success(T("Saved: {freq} report by {channels}.", freq=T(sub["frequency"]).lower(),
+                         channels=", ".join(T(ch) for ch in channels)), icon="✅")
+        else:
+            st.error(T(msg), icon="❌")
+    if store.supabase_config():
+        st.info(T("Automatic sending: GitHub Actions sends the reports every evening at about 8 PM (Cairo time) to "
+                  "everyone who saved a choice. Choices are kept in the database."), icon="🗓️")
+    else:
+        st.info(T("Automatic sending: GitHub Actions sends the reports every evening at about 8 PM (Cairo time). On "
+                  "this version the admin adds saved choices to the schedule list. Saved choices may be reset when "
+                  "the online server restarts."), icon="🗓️")
 
     if auth.is_admin():
-        with st.expander("Schedule list (admin only: it has phone numbers and keys)"):
-            subs = notify.load_subscriptions()
+        with st.expander(T("Schedule list (admin only: it has phone numbers and keys)")):
+            subs = store.load_subscriptions()
             if subs:
-                st.code(json.dumps(subs, indent=1), language="json")
-                st.caption("Copy all of it into the GitHub secret REPORT_SUBSCRIBERS (repo → Settings → Secrets and "
-                           "variables → Actions); GitHub then sends these reports on schedule.")
+                st.code(json.dumps(subs, indent=1, ensure_ascii=False), language="json")
+                st.caption(T("Kept in the Supabase database: GitHub reads them by itself, nothing to copy.")
+                           if store.supabase_config() else
+                           T("Copy all of it into the GitHub secret REPORT_SUBSCRIBERS (repo → Settings → Secrets and "
+                             "variables → Actions); GitHub then sends these reports on schedule."))
             else:
-                st.caption("Nobody has saved a choice yet.")
+                st.caption(T("Nobody has saved a choice yet."))
 
 
 def render_home():
     st.title(f"⚡ {APP_NAME}")
-    st.caption(
+    st.caption(T(
         "Smart-meter electricity pipeline: Azure Data Lake → Spark → Airflow → Snowflake → this dashboard, "
         "with machine learning, alerts and live monitoring on top."
-    )
+    ))
+    egp = T("EGP")
 
     with st.container(border=True):
         s1, s2, s3 = st.columns(3)
-        s1.markdown(f"**Data source**  \n{'⚠️' if source_name.startswith('DEMO') else '✅'} {source_name}")
-        s2.markdown(f"**Snowflake**  \n{'✅ connected' if source_name == 'Snowflake' else '❌ not connected'}")
-        s3.markdown(f"**Airflow pipeline**  \n{airflow_status(*airflow_config())}")
+        s1.markdown(f"**{T('Data source')}**  \n{'⚠️' if source_name.startswith('DEMO') else '✅'} {source_name}")
+        s2.markdown(f"**Snowflake**  \n{'✅ ' + T('connected') if source_name == 'Snowflake' else '❌ ' + T('not connected')}")
+        s3.markdown(f"**{T('Airflow pipeline')}**  \n{airflow_status(*airflow_config())}")
 
-    st.subheader("The data")
+    st.subheader(T("The data"))
     dmin, dmax = fact_df["DateTime"].min(), fact_df["DateTime"].max()
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total kWh", f"{fact_df['KWH_hh'].sum():,.0f}")
-    k2.metric("Households", f"{fact_df['LCLid'].nunique():,}")
-    k3.metric("Years", f"{dmin:%Y}–{dmax:%Y}", help=f"{dmin:%d %b %Y} to {dmax:%d %b %Y}")
-    k4.metric("Readings", f"{len(fact_df):,}", help="Half-hour readings")
+    k1.metric(T("Total kWh"), f"{fact_df['KWH_hh'].sum():,.0f}")
+    k2.metric(T("Households"), f"{fact_df['LCLid'].nunique():,}")
+    k3.metric(T("Years"), f"{dmin:%Y}–{dmax:%Y}",
+              help=T("{a} to {b}", a=f"{day_month(dmin)} {dmin.year}", b=f"{day_month(dmax)} {dmax.year}"))
+    k4.metric(T("Readings"), f"{len(fact_df):,}", help=T("Half-hour readings"))
 
-    st.subheader("Machine learning")
+    st.subheader(T("Machine learning"))
     try:
         _, res = get_ml()
     except Exception as e:
-        st.warning(f"Could not train the models for this selection: {e}")
+        st.warning(T("Could not train the models for this selection: {e}", e=e))
     else:
         rmse = res["metrics"].set_index("model")["RMSE"]
         better = 100 * (1 - rmse[res["best_name"]] / rmse["Baseline (same hour yesterday)"])
         an = get_anomalies(res)
         alerts = build_alerts(an, household=household_label(), threshold_kwh=compute_threshold(res["train"]["kwh"]))
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Best model", res["best_name"], f"{better:.0f}% vs baseline", help="Lower forecast error (RMSE)")
-        m2.metric("RMSE (kWh)", f"{rmse[res['best_name']]:.3f}", help="Forecast error on the unseen hours")
-        m3.metric("Anomalies", f"{int(an['is_anomaly'].sum()):,}", help="In the unseen (test) hours")
-        m4.metric("Alerts", f"{len(alerts):,}")
-        st.caption(f"Household: {household_label()}. Change it, and the sensitivity, on the ML pages.")
+        m1.metric(T("Best model"), res["best_name"], T("{x}% vs baseline", x=f"{better:.0f}"),
+                  help=T("Lower forecast error (RMSE)"))
+        m2.metric("RMSE (kWh)", f"{rmse[res['best_name']]:.3f}", help=T("Forecast error on the unseen hours"))
+        m3.metric(T("Anomalies"), f"{int(an['is_anomaly'].sum()):,}", help=T("In the unseen (test) hours"))
+        m4.metric(T("Alerts"), f"{len(alerts):,}")
+        st.caption(T("Household: {h}. Change it, and the sensitivity, on the ML pages.", h=household_label()))
 
-        st.subheader("This month's bill")
-        proj, tiers, flat = bill_summary(get_ml()[0], res)
+        st.subheader(T("This month's bill"))
+        proj, tiers, flat, series, offset = bill_summary(get_ml()[0], res)
         budget = float(st.session_state.bill_budget)
         b1, b2 = st.columns([1, 2])
-        b1.metric(f"Expected for {proj['month']:%B %Y}", f"{proj['projected_egp']:,.0f} EGP",
-                  f"{proj['projected_egp'] - budget:+,.0f} EGP vs budget" if budget else None, delta_color="inverse")
+        b1.metric(T("Expected for {month}", month=month_year(proj["month"])), f"{proj['projected_egp']:,.0f} {egp}",
+                  T("{x} EGP vs budget", x=f"{proj['projected_egp'] - budget:+,.0f}") if budget else None,
+                  delta_color="inverse")
         with b2:
-            tips = saving_tips(get_ml()[0], proj, budget or None, appliance_month_kwh(proj), tiers, flat)
+            tips = saving_tips(series, proj, budget or None, appliance_month_kwh(proj, offset), tiers, flat,
+                               st.session_state.lang)
             show_tips(sorted(tips, key=lambda t: t[0] != "warn")[:1])  # the most important tip only
-        st.page_link(PAGES["Bill & Budget"], label="Open Bill & Budget for details and saving tips", icon=":material/payments:")
+        st.page_link(PAGES["Bill & Budget"], label=T("Open Bill & Budget for details and saving tips"),
+                     icon=":material/payments:")
 
-    st.subheader("Where to start")
+    st.subheader(T("Where to start"))
     q1, q2, q3, q4 = st.columns(4)
-    q1.page_link(PAGES["Live"], label="Watch the live monitor", icon=":material/sensors:")
-    q2.page_link(PAGES["Forecast"], label="See the forecast", icon=":material/trending_up:")
-    q3.page_link(PAGES["Bill & Budget"], label="Check your bill", icon=":material/payments:")
-    q4.page_link(PAGES["About project"], label="How it works", icon=":material/info:")
+    q1.page_link(PAGES["Live"], label=T("Watch the live monitor"), icon=":material/sensors:")
+    q2.page_link(PAGES["Forecast"], label=T("See the forecast"), icon=":material/trending_up:")
+    q3.page_link(PAGES["Bill & Budget"], label=T("Check your bill"), icon=":material/payments:")
+    q4.page_link(PAGES["About project"], label=T("How it works"), icon=":material/info:")
 
-    with st.expander("How to use this dashboard"):
+    with st.expander(T("How to use this dashboard")):
         st.markdown(
+            T("HOW_TO") if is_ar() else
             "1. Pick a page from the menu on the left.\n"
             "2. On the ML pages (Forecast, Anomalies, Alerts, Live), choose the household in the sidebar.\n"
             "3. On **Live**, press **Start** to replay the meter readings; **Spike** adds +3 kWh to show an alert on demand.\n"
@@ -1288,75 +1353,82 @@ def render_about():
 
 # ---- Menu ---------------------------------------------------------------------
 PAGES = {
-    "Home": st.Page(render_home, title="Home", icon=":material/home:", url_path="home", default=True),
-    "Bill & Budget": st.Page(render_bill, title="Bill & Budget", icon=":material/payments:", url_path="bill"),
-    "Reports": st.Page(render_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
-    "Analytics": st.Page(render_analytics, title="Analytics", icon=":material/bar_chart:", url_path="analytics"),
+    "Home": st.Page(render_home, title=T("Home"), icon=":material/home:", url_path="home", default=True),
+    "Bill & Budget": st.Page(render_bill, title=T("Bill & Budget"), icon=":material/payments:", url_path="bill"),
+    "Reports": st.Page(render_reports, title=T("Reports"), icon=":material/forward_to_inbox:", url_path="reports"),
+    "Analytics": st.Page(render_analytics, title=T("Analytics"), icon=":material/bar_chart:", url_path="analytics"),
     "Appliances": st.Page(
-        render_appliances, title="Appliances", icon=":material/electrical_services:", url_path="appliances"
+        render_appliances, title=T("Appliances"), icon=":material/electrical_services:", url_path="appliances"
     ),
-    "Forecast": st.Page(render_forecast, title="Forecast", icon=":material/trending_up:", url_path="forecast"),
-    "Anomalies": st.Page(render_anomalies, title="Anomalies", icon=":material/warning:", url_path="anomalies"),
-    "Alerts": st.Page(render_alerts, title="Alerts", icon=":material/notifications:", url_path="alerts"),
-    "Live": st.Page(render_live, title="Live", icon=":material/sensors:", url_path="live"),
+    "Forecast": st.Page(render_forecast, title=T("Forecast"), icon=":material/trending_up:", url_path="forecast"),
+    "Anomalies": st.Page(render_anomalies, title=T("Anomalies"), icon=":material/warning:", url_path="anomalies"),
+    "Alerts": st.Page(render_alerts, title=T("Alerts"), icon=":material/notifications:", url_path="alerts"),
+    "Live": st.Page(render_live, title=T("Live"), icon=":material/sensors:", url_path="live"),
     "Pipeline monitor": st.Page(
-        render_monitor, title="Pipeline monitor", icon=":material/account_tree:", url_path="pipeline"
+        render_monitor, title=T("Pipeline monitor"), icon=":material/account_tree:", url_path="pipeline"
     ),
-    "About project": st.Page(render_about, title="About project", icon=":material/info:", url_path="about"),
+    "About project": st.Page(render_about, title=T("About project"), icon=":material/info:", url_path="about"),
 }
 monitoring = [PAGES["Live"]] + ([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
 pg = st.navigation(
     {
-        "Overview": [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Reports"]],
-        "Analysis": [PAGES["Analytics"], PAGES["Appliances"]],
-        "Machine learning": [PAGES["Forecast"], PAGES["Anomalies"], PAGES["Alerts"]],
-        "Monitoring": monitoring,
-        "Project": [PAGES["About project"]],
+        T("Overview"): [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Reports"]],
+        T("Analysis"): [PAGES["Analytics"], PAGES["Appliances"]],
+        T("Machine learning"): [PAGES["Forecast"], PAGES["Anomalies"], PAGES["Alerts"]],
+        T("Monitoring"): monitoring,
+        T("Project"): [PAGES["About project"]],
     }
 )
+page_key = pg.url_path or "home"  # the default page's url_path is ""; titles change with the language
 
 PAGE_INTRO = {
-    "Bill & Budget": "Your bill in Egyptian pounds, the expected bill at month end, budget alerts and saving tips.",
-    "Reports": "Your energy report by Gmail, WhatsApp or SMS: today, tomorrow's forecast, the bill and tips.",
-    "Analytics": "Explore consumption by household, date and day type.",
-    "Appliances": "Where the energy goes inside the house (UCI sub-meters).",
-    "Forecast": "Random Forest vs XGBoost vs a 'same hour yesterday' baseline, and the next 24 hours.",
-    "Anomalies": "Hours the model did not expect, found on data it never trained on.",
-    "Alerts": "Hours above the consumption limit, and anomaly alerts.",
-    "Live": "Simulated real-time monitoring.",
-    "Pipeline monitor": "Live status of the Airflow pipeline, from the Airflow REST API.",
-    "About project": "How the project works, the data it uses and what is done.",
+    "bill": "Your bill in Egyptian pounds, the expected bill at month end, budget alerts and saving tips.",
+    "reports": "Your energy report by Gmail, WhatsApp or SMS: today, tomorrow's forecast, the bill and tips.",
+    "analytics": "Explore consumption by household, date and day type.",
+    "appliances": "Where the energy goes inside the house (UCI sub-meters).",
+    "forecast": "Random Forest vs XGBoost vs a 'same hour yesterday' baseline, and the next 24 hours.",
+    "anomalies": "Hours the model did not expect, found on data it never trained on.",
+    "alerts": "Hours above the consumption limit, and anomaly alerts.",
+    "live": "Simulated real-time monitoring.",
+    "pipeline": "Live status of the Airflow pipeline, from the Airflow REST API.",
+    "about": "How the project works, the data it uses and what is done.",
 }
 
 # ---- Sidebar: ML settings (only where they matter), then the account box ------
-if data_error is None and pg.title in ("Forecast", "Anomalies", "Alerts", "Live"):
-    ml_sidebar(with_detectors=pg.title in ("Anomalies", "Alerts"))
+if data_error is None and page_key in ("forecast", "anomalies", "alerts", "live"):
+    ml_sidebar(with_detectors=page_key in ("anomalies", "alerts"))
 
 with st.sidebar:
     st.divider()
-    st.caption(f":material/database: Data: {source_name}")
+    language_switch()
+    st.caption(f":material/database: {T('Data: {source}', source=source_name)}")
     if auth.login_enabled():
         user = auth.current_user()
-        st.markdown(f":material/person: **{user['name']}** · {user['role']}")
-        if st.button("Log out", icon=":material/logout:", width="stretch"):
+        st.markdown(f":material/person: **{user['name']}** · {T(user['role'])}")
+        if st.button(T("Log out"), icon=":material/logout:", width="stretch"):
             auth.logout()
             st.rerun()
     else:
         st.warning("Login is off: add [auth] users to secrets.toml (see secrets.toml.example).", icon="🔓")
-    st.caption("Light / dark mode: ⋮ menu (top right) → Light or Dark.")
+    st.caption(T("Light / dark mode: ⋮ menu (top right) → Light or Dark."))
 
 # ---- The open page ------------------------------------------------------------
+if is_ar():  # right-to-left and an Arabic font; pages not translated yet keep the English layout
+    st.markdown(RTL_CSS if page_key in TRANSLATED_PAGES else
+                '<style>[data-testid="stSidebarContent"] { direction: rtl; }</style>', unsafe_allow_html=True)
 if source_name.startswith("DEMO"):
     st.warning(
         "DEMO MODE: showing FAKE data because the app could not connect to Snowflake "
         "and there are no data files in the 'data' folder. "
         f"Reason: {str(snowflake_error)[:250]}"
     )
-if pg.title != "Home":
+if page_key != "home":
     st.title(f"{pg.icon} {pg.title}")
-    st.caption(PAGE_INTRO.get(pg.title, ""))
+    st.caption(T(PAGE_INTRO.get(page_key, "")))
+    if is_ar() and page_key not in TRANSLATED_PAGES:
+        st.info(T("This page is in English for now."), icon="ℹ️")
 
-if data_error is not None and pg.title not in ("Pipeline monitor", "About project"):
+if data_error is not None and page_key not in ("pipeline", "about"):
     st.error(f"Could not load the data: {data_error}")
 else:
     pg.run()

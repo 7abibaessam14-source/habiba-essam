@@ -13,6 +13,8 @@ import math
 import numpy as np
 import pandas as pd
 
+from i18n import AR, day_month
+
 EGYPT_TIERS = [  # (upper kWh of the tier, EGP per kWh); None = no upper limit
     (50, 0.68),
     (100, 0.98),
@@ -125,11 +127,12 @@ def month_projection(hourly, as_of, next_24h_kwh=None, tiers=None, flat_price=No
     }
 
 
-def saving_tips(hourly, proj, budget_egp=None, appliance_kwh=None, tiers=None, flat_price=None):
+def saving_tips(hourly, proj, budget_egp=None, appliance_kwh=None, tiers=None, flat_price=None, lang="en"):
     """
     Short tips written from the user's own numbers. appliance_kwh: {name: kWh this month} when known.
-    Returns a list of (kind, text) with kind in {"warn", "good", "info"}.
+    lang: "en" or "ar". Returns a list of (kind, text) with kind in {"warn", "good", "info"}.
     """
+    ar = lang == "ar"
     tips = []
     day = proj["as_of"]
     d = daily_kwh(hourly.loc[: day + pd.Timedelta(hours=23)])
@@ -139,25 +142,35 @@ def saving_tips(hourly, proj, budget_egp=None, appliance_kwh=None, tiers=None, f
         avg = before.mean()
         change = (today - avg) / avg
         if change > 0.15:
-            tips.append(("warn", f"Your use on {day:%d %b} was {change:.0%} higher than your usual day "
+            tips.append(("warn", f"استهلاكك يوم {day_month(day, 'ar')} كان أعلى من يومك المعتاد بنسبة {change:.0%} "
+                                 f"({today:.1f} ك.و.س مقابل {avg:.1f} ك.و.س)." if ar else
+                                 f"Your use on {day:%d %b} was {change:.0%} higher than your usual day "
                                  f"({today:.1f} kWh vs {avg:.1f} kWh)."))
         elif change < -0.15:
-            tips.append(("good", f"Well done: your use on {day:%d %b} was {-change:.0%} lower than your usual day "
+            tips.append(("good", f"أحسنت: استهلاكك يوم {day_month(day, 'ar')} كان أقل من يومك المعتاد بنسبة {-change:.0%} "
+                                 f"({today:.1f} ك.و.س مقابل {avg:.1f} ك.و.س)." if ar else
+                                 f"Well done: your use on {day:%d %b} was {-change:.0%} lower than your usual day "
                                  f"({today:.1f} kWh vs {avg:.1f} kWh)."))
 
     if budget_egp:
         over = proj["projected_egp"] - budget_egp
         if over > 0:
-            tips.append(("warn", f"At this rate your bill will reach about {proj['projected_egp']:,.0f} EGP, "
+            tips.append(("warn", f"بهذا المعدل ستصل فاتورتك إلى حوالي {proj['projected_egp']:,.0f} جنيه، أي أعلى من "
+                                 f"ميزانيتك ({budget_egp:,.0f} جنيه) بـ{over:,.0f} جنيه." if ar else
+                                 f"At this rate your bill will reach about {proj['projected_egp']:,.0f} EGP, "
                                  f"{over:,.0f} EGP over your budget of {budget_egp:,.0f} EGP."))
         else:
-            tips.append(("good", f"You are on track: about {proj['projected_egp']:,.0f} EGP expected, "
+            tips.append(("good", f"أنت على المسار الصحيح: المتوقع حوالي {proj['projected_egp']:,.0f} جنيه، أقل من "
+                                 f"ميزانيتك بـ{-over:,.0f} جنيه." if ar else
+                                 f"You are on track: about {proj['projected_egp']:,.0f} EGP expected, "
                                  f"{-over:,.0f} EGP under your budget."))
 
     if flat_price is None:
         nt = next_tier(proj["projected_kwh"], tiers)
         if nt and nt[0] - proj["projected_kwh"] < 0.1 * nt[0]:
-            tips.append(("warn", f"You are close to the next price tier: after {nt[0]:,} kWh each kWh costs "
+            tips.append(("warn", f"اقتربت من الشريحة التالية: بعد {nt[0]:,} ك.و.س يصبح سعر كل ك.و.س {nt[1]:.2f} جنيه. "
+                                 f"التوفير البسيط الآن يجعل الشهر كله أرخص." if ar else
+                                 f"You are close to the next price tier: after {nt[0]:,} kWh each kWh costs "
                                  f"{nt[1]:.2f} EGP. Saving a little now keeps the whole month cheaper."))
 
     last14 = hourly.loc[day - pd.Timedelta(days=13): day + pd.Timedelta(hours=23)].dropna()
@@ -165,10 +178,14 @@ def saving_tips(hourly, proj, budget_egp=None, appliance_kwh=None, tiers=None, f
         night = last14[(last14.index.hour >= 1) & (last14.index.hour < 5)].mean()
         overall = last14.mean()
         if overall > 0 and night > 0.5 * overall:
-            tips.append(("warn", f"Between 1 and 5 AM you still use about {night:.2f} kWh per hour "
+            tips.append(("warn", f"بين الساعة 1 و5 فجرًا ما زلت تستهلك حوالي {night:.2f} ك.و.س في الساعة "
+                                 f"({night / overall:.0%} من متوسط ساعتك). تأكد من الأجهزة التي تُترك تعمل ليلًا." if ar else
+                                 f"Between 1 and 5 AM you still use about {night:.2f} kWh per hour "
                                  f"({night / overall:.0%} of your average hour). Check for devices left on at night."))
         peak = last14.groupby(last14.index.hour).mean().idxmax()
-        tips.append(("info", f"Your busiest hour is around {peak:02d}:00. Moving washing or water heating "
+        tips.append(("info", f"أكثر ساعة استهلاكًا عندك حوالي الساعة {peak:02d}:00. تشغيل الغسالة أو السخان في وقت آخر "
+                             f"يوزّع الحمل." if ar else
+                             f"Your busiest hour is around {peak:02d}:00. Moving washing or water heating "
                              f"away from that hour spreads the load."))
 
     real = {k: v for k, v in (appliance_kwh or {}).items() if not k.startswith("Other")}  # "Other" is not a device
@@ -178,6 +195,8 @@ def saving_tips(hourly, proj, budget_egp=None, appliance_kwh=None, tiers=None, f
         if total > 0:
             price = price_of_next_kwh(proj["projected_kwh"], tiers, flat_price)
             saving = 0.10 * kwh * price
-            tips.append(("info", f"{name} uses {kwh / total:.0%} of your energy this month. Using it 10% less "
+            tips.append(("info", f"{AR.get(name, name)} يستهلك {kwh / total:.0%} من طاقتك هذا الشهر. تقليل استخدامه 10% "
+                                 f"يوفر حوالي {saving:,.0f} جنيه في الشهر." if ar else
+                                 f"{name} uses {kwh / total:.0%} of your energy this month. Using it 10% less "
                                  f"would save about {saving:,.0f} EGP a month."))
     return tips
