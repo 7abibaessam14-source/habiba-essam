@@ -26,6 +26,8 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python send_reports.py ${{ inputs.force && '--force' || '' }}
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           REPORT_SUBSCRIBERS: ${{ secrets.REPORT_SUBSCRIBERS }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
