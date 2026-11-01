@@ -163,6 +163,12 @@ def train_and_compare(feat_df, test_frac=0.2, model_path=None):
     }
 
 
+def feature_importance(model):
+    """Share (0-1) of each feature in the model's decisions, biggest first (Random Forest and XGBoost both have it)."""
+    imp = pd.Series(model.feature_importances_, index=FEATURES, dtype=float)
+    return (imp / imp.sum()).sort_values(ascending=False) if imp.sum() > 0 else imp
+
+
 def load_model(model_path):
     bundle = joblib.load(model_path)
     return bundle["model"], bundle["name"]

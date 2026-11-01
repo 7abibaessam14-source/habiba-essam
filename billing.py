@@ -23,6 +23,15 @@ EGYPT_TIERS = [  # (upper kWh of the tier, EGP per kWh); None = no upper limit
     (None, 2.74),
 ]
 
+# Carbon footprint: Egypt's grid is mostly natural-gas power, about 0.45 kg CO2 per kWh (an estimate; the exact
+# factor changes every year). One tree absorbs roughly 21 kg CO2 a year.
+CO2_KG_PER_KWH = 0.45
+CO2_KG_PER_TREE_YEAR = 21
+
+
+def co2_kg(kwh):
+    return max(float(kwh), 0.0) * CO2_KG_PER_KWH
+
 
 def bill_egp(kwh, tiers=None, flat_price=None):
     """Cost in EGP of `kwh` in one month: tiered (each kWh at its tier's price) or one flat price."""

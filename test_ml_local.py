@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from alerts import build_alerts, compute_threshold
-from ml_models import HAS_XGB, run_pipeline
+from ml_models import HAS_XGB, feature_importance, run_pipeline
 
 
 def make_demo_data(days=120, n_spikes=6, seed=7):
@@ -50,6 +50,9 @@ if __name__ == "__main__":
     print("Model comparison (lower RMSE is better):")
     print(res["metrics"].round(4).to_string(index=False))
     print(f"\nBest model: {res['best_name']}")
+    imp = feature_importance(res["best_model"])
+    assert abs(imp.sum() - 1) < 1e-6 and list(imp) == sorted(imp, reverse=True), "feature shares must add up to 100%"
+    print("Most important features:", ", ".join(f"{k} {v:.0%}" for k, v in imp.head(3).items()))
 
     an = res["anomalies"]
     found = set(an.index[an["is_anomaly"]])

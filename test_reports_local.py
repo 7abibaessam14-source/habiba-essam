@@ -54,6 +54,7 @@ for freq in ("Daily", "Weekly", "Monthly"):
     check(f"{freq}: every format says what tomorrow looks like", all("omorrow" in t for t in (sms, wa, subject, text, html)))
 check("the SMS uses plain characters only", all(ord(ch) < 128 for ch in as_sms(r)))
 check("the budget appears in the report", "300 EGP budget" in as_whatsapp(r))
+check("the carbon footprint appears in WhatsApp and email", "kg CO₂" in as_whatsapp(r) and "kg CO₂" in as_email(r)[1])
 
 check("a wrong email is refused before sending", not notify.send_gmail({"user": "x", "password": "y"}, "not-an-email", "s", "t")[0])
 check("a phone without +country code is refused", not notify.send_whatsapp("01001234567", "key", "hi")[0])

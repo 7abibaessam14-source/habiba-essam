@@ -39,9 +39,10 @@ from demo_data import make_demo_frames
 from uci_loader import APPLIANCE_COLUMNS, UCI_FILENAME, load_uci, uci_path, uci_signature
 from alerts import build_alerts, compute_threshold, send_email_alert
 import auth
-from billing import EGYPT_TIERS, bill_egp, month_projection, saving_tips
+from billing import CO2_KG_PER_KWH, CO2_KG_PER_TREE_YEAR, EGYPT_TIERS, bill_egp, co2_kg, month_projection, saving_tips
 from live import LiveReplay
-from ml_models import FEATURES, add_features, detect_anomalies, forecast_next, to_hourly, train_and_compare
+from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
+                       train_and_compare)
 import notify
 from reports import CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, now_local
 
@@ -79,6 +80,19 @@ def pan_zoom(tab):
 
 
 ZOOM_HELP = "Drag to move, Ctrl + mouse wheel to zoom, 'Reset zoom' to go back."
+
+FEATURE_NAMES = {  # ml_models.FEATURES in plain words, for the "Why does the model predict this?" chart
+    "hour": "Hour of the day",
+    "dayofweek": "Day of the week",
+    "month": "Month (season)",
+    "is_weekend": "Weekend or not",
+    "lag_1": "Last hour",
+    "lag_2": "Two hours ago",
+    "lag_24": "Same hour yesterday",
+    "lag_168": "Same hour last week",
+    "roll_mean_24": "Average of the last 24 hours",
+    "roll_std_24": "How much the last 24 hours varied",
+}
 
 
 def _bump_zoom(tab):
@@ -565,6 +579,21 @@ def render_forecast():
     )
     st.success(f"Best model: {res['best_name']}")
 
+    st.subheader("Why does the model predict this?")
+    imp = feature_importance(res["best_model"])
+    why = pd.DataFrame({"feature": [FEATURE_NAMES[f] for f in imp.index], "share": imp.values})
+    st.altair_chart(
+        alt.Chart(why).mark_bar(color=ACTUAL_VS_MODEL[1]).encode(
+            x=alt.X("share:Q", title="Share of the model's decisions", axis=alt.Axis(format="%")),
+            y=alt.Y("feature:N", sort="-x", title=None, axis=alt.Axis(labelLimit=260)),
+            tooltip=["feature:N", alt.Tooltip("share:Q", format=".1%")],
+        ),
+        width="stretch",
+    )
+    top = why.iloc[0]
+    st.caption(f"The {res['best_name']} model relies most on **{top['feature'].lower()}** ({top['share']:.0%}). "
+               "Lag = the consumption some hours before; the model learns the household's daily and weekly habits.")
+
     st.subheader("Actual vs predicted (unseen period)")
     days = st.slider("Days to show", 2, 30, 7)
     shown = res["test"].tail(days * 24)
@@ -951,6 +980,12 @@ def render_bill():
         "kWh is priced at its tier's price; real bills can add fees. Tomorrow uses the model's 24-hour forecast, "
         "the other days your average day."
     )
+    month_co2 = co2_kg(proj["projected_kwh"])
+    st.markdown(f"🌍 **Carbon footprint:** about **{month_co2:,.0f} kg CO₂** this month "
+                f"({co2_kg(proj['used_kwh']):,.0f} kg so far). Absorbing it would take about "
+                f"**{month_co2 * 12 / CO2_KG_PER_TREE_YEAR:,.0f} trees** a year.",
+                help=f"Estimate: {CO2_KG_PER_KWH} kg CO₂ per kWh for Egypt's mostly natural-gas power, "
+                     f"one tree absorbs about {CO2_KG_PER_TREE_YEAR} kg CO₂ a year.")
 
     # cumulative bill through the month: actual days, then expected days, against the budget
     daily = proj["daily"].fillna(0)

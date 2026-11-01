@@ -13,7 +13,7 @@ import math
 
 import pandas as pd
 
-from billing import bill_egp, daily_kwh, month_projection, saving_tips
+from billing import bill_egp, co2_kg, daily_kwh, month_projection, saving_tips
 from ml_models import forecast_next
 from uci_loader import APPLIANCE_COLUMNS
 
@@ -119,6 +119,7 @@ def build_report(hourly, model, frequency="Daily", now=None, tiers=None, flat_pr
         "change": change,
         "trend": trend,
         "proj": proj,
+        "co2_month_kg": co2_kg(proj["projected_kwh"]),
         "budget": budget_egp,
         "tips": tips,
         "forecast": fc,
@@ -164,6 +165,7 @@ def as_whatsapp(r):
         f"{r['period']}: *{r['period_kwh']:.1f} kWh* ≈ {r['period_egp']:,.0f} EGP{_change(r)}",
         f"{arrow} Tomorrow: {_tomorrow_line(r)}",
         f"🧾 {p['month']:%B}: {p['used_egp']:,.0f} EGP so far, {_budget_line(r)}{budget_icon}",
+        f"🌍 Carbon: about {r['co2_month_kg']:,.0f} kg CO₂ this month",
     ]
     if r["tips"]:
         lines.append("💡 *Tips:*")
@@ -185,6 +187,7 @@ def as_email(r):
                                 if r["trend"] != "about the same" else f"{r['tomorrow_kwh']:.1f} kWh – about the same as today"),
         (f"{p['month']:%B} so far", f"{p['used_kwh']:,.0f} kWh ≈ {p['used_egp']:,.0f} EGP"),
         (f"{p['month']:%B} bill", _budget_line(r)),
+        ("Carbon footprint", f"about {r['co2_month_kg']:,.0f} kg CO₂ this month"),
     ]
     text = "\n".join([f"Smart Energy – {r['frequency']} report ({r['today']:%d %b %Y})", ""]
                      + [f"{k}: {v}" for k, v in rows]

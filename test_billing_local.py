@@ -5,7 +5,7 @@ test_billing_local.py - checks billing.py with numbers that are easy to verify b
 import numpy as np
 import pandas as pd
 
-from billing import bill_egp, month_projection, next_tier, price_of_next_kwh, saving_tips
+from billing import bill_egp, co2_kg, month_projection, next_tier, price_of_next_kwh, saving_tips
 
 ok = True
 
@@ -51,5 +51,7 @@ ok &= found_jump and found_budget and found_appl
 print(f"{'ok  ' if found_jump else 'FAIL'} tip about the jump on 10 Sep")
 print(f"{'ok  ' if found_budget else 'FAIL'} tip about going over the budget")
 print(f"{'ok  ' if found_appl else 'FAIL'} tip about the biggest appliance")
+
+check("carbon: 100 kWh = 45 kg CO2", co2_kg(100), 45.0)
 
 print("\nRESULT:", "PASS" if ok else "FAIL")
