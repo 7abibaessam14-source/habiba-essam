@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 
 import notify
-from reports import align_to_today, as_email, as_sms, as_whatsapp, build_report, is_due
+import store
+from reports import align_to_today, as_email, as_sms, as_whatsapp, build_report, is_due, sms_parts
 from send_reports import mask
 
 ok = True
@@ -54,6 +55,13 @@ for freq in ("Daily", "Weekly", "Monthly"):
     check(f"{freq}: every format says what tomorrow looks like", all("omorrow" in t for t in (sms, wa, subject, text, html)))
 check("the SMS uses plain characters only", all(ord(ch) < 128 for ch in as_sms(r)))
 check("the budget appears in the report", "300 EGP budget" in as_whatsapp(r))
+ra = build_report(hourly, SameHourYesterday(), "Weekly", now=now, budget_egp=300, lang="ar")
+check("Arabic: same numbers as English", abs(ra["tomorrow_kwh"] - build_report(hourly, SameHourYesterday(), "Weekly", now=now)["tomorrow_kwh"]) < 1e-9)
+check("Arabic: WhatsApp, SMS and email are in Arabic",
+      all("الغد" in t for t in (as_whatsapp(ra), as_sms(ra), as_email(ra)[0], as_email(ra)[1])))
+check("Arabic: the email is right-to-left", "dir='rtl'" in as_email(ra)[2])
+check("Arabic: the tips are in Arabic", all(any("؀" <= c <= "ۿ" for c in t) for _, t in ra["tips"]))
+check("Arabic SMS is counted in 67-character parts", sms_parts("ا" * 68) == 2 and sms_parts("a" * 153) == 1)
 check("the carbon footprint appears in WhatsApp and email", "kg CO₂" in as_whatsapp(r) and "kg CO₂" in as_email(r)[1])
 
 check("a wrong email is refused before sending", not notify.send_gmail({"user": "x", "password": "y"}, "not-an-email", "s", "t")[0])
@@ -66,9 +74,9 @@ check("missing Gmail / Twilio settings give a clear message", [m.split(":")[0] f
 
 with tempfile.TemporaryDirectory() as tmp:
     f = Path(tmp) / "subs.json"
-    notify.save_subscription("sara_1", {"frequency": "Weekly", "channels": ["Gmail"], "email": "s@x.com"}, f)
-    notify.save_subscription("sara_1", {"frequency": "Daily", "channels": ["SMS"], "phone": "+201001234567"}, f)
-    subs = notify.load_subscriptions(f)
+    store.save_subscription("sara_1", {"frequency": "Weekly", "channels": ["Gmail"], "email": "s@x.com"}, f)
+    store.save_subscription("sara_1", {"frequency": "Daily", "channels": ["SMS"], "phone": "+201001234567"}, f)
+    subs = store.load_subscriptions(f)
     check("saving again replaces the old choice", list(subs) == ["sara_1"] and subs["sara_1"]["frequency"] == "Daily")
 
 check("contacts are masked in the GitHub log", mask("habiba@gmail.com") == "ha***@gmail.com" and "100123" not in mask("+201001234567"))
