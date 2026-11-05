@@ -5,6 +5,7 @@ Pages (sidebar menu, only the open page runs)
   Home              project summary: data source, key numbers, quick links
   Bill & Budget     bill in EGP, month-end projection, budget alerts, saving tips
   Reports           daily / weekly / monthly report by Gmail, WhatsApp or SMS (preview, send now, save)
+  Meter assistant   chatbot: meter reading by photo or text (user confirms), consumption, bill and advice
   Analytics        household exploration + naive trend baseline
   Appliances        kitchen / laundry / water heater+AC (needs the UCI file in ./data)
   Forecast          Random Forest vs XGBoost, next-24h forecast
@@ -19,6 +20,7 @@ Credentials come from Streamlit secrets (.streamlit/secrets.toml), never hardcod
   [airflow]    base_url, dag_id, user, password
   [smtp]       host, port, user, password, to = ["a@b.com"]      (optional, for email alerts and reports)
   [twilio]     account_sid, auth_token, from_number               (optional, for SMS reports)
+  [groq]       api_key                                            (optional, for the Meter assistant's chat and photos)
   [auth.users.<name>]  password_hash, role                        (optional, login; see auth.py)
 
 Light / dark colours: .streamlit/config.toml. Needs the other .py files of this folder.
@@ -41,6 +43,7 @@ from alerts import build_alerts, compute_threshold, send_email_alert
 import auth
 from billing import CO2_KG_PER_KWH, CO2_KG_PER_TREE_YEAR, EGYPT_TIERS, bill_egp, co2_kg, month_projection, saving_tips
 from live import LiveReplay
+import meter_assistant
 from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
                        train_and_compare)
 import notify
@@ -271,7 +274,7 @@ STATE_COLORS = {
 
 # ---- Login first: nothing is loaded before someone is logged in ---------------
 st.logo(str(ASSETS / "logo.svg"), icon_image=str(ASSETS / "icon.svg"), size="large")
-PAGE_URLS = ["home", "bill", "reports", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
+PAGE_URLS = ["home", "bill", "reports", "assistant", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
 if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which
     # Streamlit would otherwise keep showing) and a link like /live opens that page after logging in.
@@ -1209,6 +1212,149 @@ def render_reports():
                 st.caption(T("Nobody has saved a choice yet."))
 
 
+MAX_ASSISTANT_CALLS = 30  # each chat reply or photo costs money on the app's API key, so keep a limit per visit
+
+
+def assistant_call_allowed():
+    if st.session_state.get("meter_calls", 0) >= MAX_ASSISTANT_CALLS:
+        st.error(T("You reached the assistant's limit of {n} requests per visit. Log in again to continue.",
+                   n=MAX_ASSISTANT_CALLS))
+        return False
+    st.session_state.meter_calls = st.session_state.get("meter_calls", 0) + 1
+    return True
+
+
+def add_assistant_note(text):
+    st.session_state.meter_chat.append({"role": "assistant", "content": text})
+
+
+def render_assistant():
+    st.session_state.setdefault("meter_chat", [])
+    st.session_state.setdefault("meter_nonce", 0)  # a new number gives the upload box and the form fresh values
+    user = auth.current_user()["name"]
+    tiers, flat = bill_tariff()
+    budget = float(st.session_state.bill_budget) or None
+    lang, has_key = st.session_state.lang, meter_assistant.api_key() is not None
+    egp, kwh_unit = T("EGP"), T("kWh")
+
+    readings = store.load_meter_readings(user)
+    if readings is None:  # never go on without them: the checks need the last reading
+        st.error(T("Could not reach the database. Please try again."))
+        return
+    facts = meter_assistant.consumption_summary(readings, tiers, flat, budget)
+
+    if "kwh_per_day" in facts:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(T("Last reading"), f"{facts['last_reading_kwh']:,.1f} {kwh_unit}", facts["last_read_on"], delta_color="off")
+        m2.metric(T("Use per day"), f"{facts['kwh_per_day']:.1f} {kwh_unit}",
+                  T("{x} from the period before", x=f"{facts['change_from_previous_period_percent']:+.0f}%")
+                  if "change_from_previous_period_percent" in facts else None, delta_color="inverse",
+                  help=T("From your last two readings: {k} kWh in {d} days.", k=f"{facts['period_kwh']:,.1f}", d=facts["period_days"]))
+        m3.metric(T("A month at this rate"), f"{facts['typical_month_kwh']:,.0f} {kwh_unit}", help=T("30 days at your use per day."))
+        m4.metric(T("Expected bill"), f"{facts['typical_month_bill_egp']:,.0f} {egp}",
+                  T("Tariff and budget come from the Bill & Budget page."), delta_color="off")
+        if facts["short_period_less_certain"]:
+            st.info(T("Your last two readings are less than a week apart, so these numbers are less certain."), icon="🧪")
+    elif readings:
+        st.info(T("First reading saved: {r} kWh. Send another one after a few days to see your consumption.",
+                  r=f"{readings[-1]['reading_kwh']:,.1f}"), icon="👍")
+    else:
+        st.info(T("Start with a photo of your meter, or type the reading. Consumption is the difference between two "
+                  "readings, so you will see your numbers from the second one."), icon="📷")
+
+    c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+    photo = c1.file_uploader(T("Photo of your meter"), type=["jpg", "jpeg", "png", "webp"], disabled=not has_key,
+                             key=f"meter_photo_{st.session_state.meter_nonce}",
+                             help=T("The photo is sent to the Groq API to read it, and is not saved by this app."))
+    read_it = c2.button(T("Read the photo"), type="primary", icon=":material/document_scanner:", width="stretch",
+                        disabled=photo is None)
+    if c2.button(T("Type a reading"), icon=":material/edit:", width="stretch"):
+        st.session_state.meter_pending = {"reading": readings[-1]["reading_kwh"] if readings else 0.0, "source": "manual"}
+        st.session_state.meter_nonce += 1
+    if not has_key:
+        st.caption(T("The chat and photo reading need an API key: add [groq] to secrets.toml (see secrets.toml.example)."))
+
+    if read_it and assistant_call_allowed():
+        with st.spinner(T("Reading the meter...")):
+            try:
+                found = meter_assistant.read_meter_photo(photo.getvalue(), lang)
+            except ValueError:
+                st.error(T("This file is not an image the app can open."))
+            except meter_assistant.AssistantError as e:
+                st.error(T(str(e)))
+            else:
+                st.session_state.meter_nonce += 1
+                if found["kind"] == "kwh":
+                    st.session_state.meter_pending = {"reading": found["reading"], "source": "photo"}
+                add_assistant_note(found["note"])
+                st.rerun()
+
+    if readings:
+        with st.expander(T("My readings ({n})", n=len(readings))):
+            col_date, col_read, col_src = T("Date"), T("Reading (kWh)"), T("Source")
+            st.dataframe(pd.DataFrame([(r["read_on"], r["reading_kwh"], T(r["source"])) for r in reversed(readings)],
+                                      columns=[col_date, col_read, col_src]), hide_index=True, width="stretch")
+            if st.button(T("Delete the last reading"), icon=":material/delete:"):
+                ok, msg = store.delete_meter_reading(user, readings[-1]["read_on"])
+                if ok:
+                    st.rerun()
+                st.error(T(msg))
+
+    for m in st.session_state.meter_chat:
+        if not m.get("hidden"):
+            st.chat_message(m["role"]).markdown(m["content"])
+
+    if st.session_state.pop("meter_ask", False):
+        if assistant_call_allowed():
+            with st.chat_message("assistant"), st.spinner(T("Thinking...")):
+                try:
+                    reply = meter_assistant.chat(st.session_state.meter_chat, facts, lang)
+                except meter_assistant.AssistantError as e:
+                    st.error(T(str(e)))
+                else:
+                    if reply["proposed"] is not None:
+                        st.session_state.meter_pending = {"reading": reply["proposed"], "source": "chat"}
+                        st.session_state.meter_nonce += 1
+                    add_assistant_note(reply["text"] or T("Please check the reading below."))
+                    st.rerun()
+
+    # a reading from a photo or the chat is only a proposal until the user presses Confirm
+    pending = st.session_state.get("meter_pending")
+    if pending:
+        with st.container(border=True):
+            st.markdown(f"**{T('Is this reading right?')}**")
+            today = now_local().date()
+            f1, f2 = st.columns(2)
+            value = f1.number_input(T("Reading (kWh)"), min_value=0.0, value=float(pending["reading"]), step=1.0, format="%.1f",
+                                    key=f"meter_value_{st.session_state.meter_nonce}")
+            on_date = f2.date_input(T("Date of the reading"), value=today, max_value=today,
+                                    key=f"meter_date_{st.session_state.meter_nonce}")
+            if meter_assistant.looks_too_high(readings, value, on_date):
+                st.warning(T("This means more than {n} kWh a day. Please check the digits.", n=meter_assistant.MAX_DAY_KWH), icon="⚠️")
+            b1, b2 = st.columns(2)
+            if b1.button(T("Confirm and save"), type="primary", icon=":material/check:", width="stretch"):
+                problem = meter_assistant.check_reading(readings, value, on_date, today)
+                ok, msg = (False, problem) if problem else store.add_meter_reading(user, on_date.isoformat(), value, pending["source"])
+                if ok:
+                    del st.session_state.meter_pending
+                    st.session_state.meter_nonce += 1
+                    add_assistant_note(T("Saved: {r} kWh on {d}.", r=f"{value:,.1f}", d=on_date.isoformat()))
+                    if readings and has_key:  # a second reading means there are new numbers to explain
+                        st.session_state.meter_chat.append({"role": "user", "hidden": True, "content": (
+                            "I saved a new meter reading. Explain my numbers briefly and give me my most useful tips.")})
+                        st.session_state.meter_ask = True
+                    st.rerun()
+                st.error(T(msg))
+            if b2.button(T("Cancel"), icon=":material/close:", width="stretch"):
+                del st.session_state.meter_pending
+                st.rerun()
+
+    if question := st.chat_input(T("Ask about your electricity, or write your meter reading"), disabled=not has_key):
+        st.session_state.meter_chat.append({"role": "user", "content": question})
+        st.session_state.meter_ask = True
+        st.rerun()
+
+
 def render_home():
     st.title(f"⚡ {APP_NAME}")
     st.caption(T(
@@ -1342,6 +1488,7 @@ def render_about():
                 ("Login with roles, light / dark theme", "✅ Done", "Sidebar"),
                 ("Bill in EGP, budget alerts, saving assistant", "✅ Done", "Bill & Budget"),
                 ("Daily / weekly / monthly reports by Gmail, WhatsApp, SMS", "✅ Done (sending needs keys)", "Reports"),
+                ("LLM chatbot: meter reading by photo or text, advice", "✅ Done (chat needs a key)", "Meter assistant"),
             ],
             columns=["Feature", "Status", "Page"],
         ).set_index("Feature")
@@ -1357,6 +1504,7 @@ PAGES = {
     "Home": st.Page(render_home, title=T("Home"), icon=":material/home:", url_path="home", default=True),
     "Bill & Budget": st.Page(render_bill, title=T("Bill & Budget"), icon=":material/payments:", url_path="bill"),
     "Reports": st.Page(render_reports, title=T("Reports"), icon=":material/forward_to_inbox:", url_path="reports"),
+    "Meter assistant": st.Page(render_assistant, title=T("Meter assistant"), icon=":material/smart_toy:", url_path="assistant"),
     "Analytics": st.Page(render_analytics, title=T("Analytics"), icon=":material/bar_chart:", url_path="analytics"),
     "Appliances": st.Page(
         render_appliances, title=T("Appliances"), icon=":material/electrical_services:", url_path="appliances"
@@ -1373,7 +1521,7 @@ PAGES = {
 monitoring = [PAGES["Live"]] + ([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
 pg = st.navigation(
     {
-        T("Overview"): [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Reports"]],
+        T("Overview"): [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Reports"], PAGES["Meter assistant"]],
         T("Analysis"): [PAGES["Analytics"], PAGES["Appliances"]],
         T("Machine learning"): [PAGES["Forecast"], PAGES["Anomalies"], PAGES["Alerts"]],
         T("Monitoring"): monitoring,
@@ -1385,6 +1533,7 @@ page_key = pg.url_path or "home"  # the default page's url_path is ""; titles ch
 PAGE_INTRO = {
     "bill": "Your bill in Egyptian pounds, the expected bill at month end, budget alerts and saving tips.",
     "reports": "Your energy report by Gmail, WhatsApp or SMS: today, tomorrow's forecast, the bill and tips.",
+    "assistant": "Send a photo of your meter or type the reading, then ask how to lower your bill.",
     "analytics": "Explore consumption by household, date and day type.",
     "appliances": "Where the energy goes inside the house (UCI sub-meters).",
     "forecast": "Random Forest vs XGBoost vs a 'same hour yesterday' baseline, and the next 24 hours.",

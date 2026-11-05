@@ -1,12 +1,12 @@
 """
-store.py - where the accounts made on the login page and the saved report choices are kept.
+store.py - where the accounts made on the login page, the saved report choices and the meter readings are kept.
 
   Supabase (a free cloud PostgreSQL database) when the keys are set:
       [supabase]  url = "https://xxxx.supabase.co", key = "<secret key>"    in .streamlit/secrets.toml
       or the environment variables SUPABASE_URL and SUPABASE_KEY            (GitHub Actions)
   otherwise JSON files in .streamlit/ like before: fine on your own PC, lost when Streamlit Cloud restarts.
 
-Create the two tables once with supabase_setup.sql. This file talks to Supabase's REST API with `requests`,
+Create the tables once with supabase_setup.sql. This file talks to Supabase's REST API with `requests`,
 so no extra package is needed. The key is the SECRET key: it stays on the server and is never shown.
 Passing `path` always uses that JSON file (the tests do this), whatever the settings.
 """
@@ -23,6 +23,7 @@ import requests
 FOLDER = Path(__file__).parent / ".streamlit"
 USERS_FILE = FOLDER / "app_users.json"
 SUBSCRIPTIONS_FILE = FOLDER / "report_subscriptions.json"
+METER_READINGS_FILE = FOLDER / "meter_readings.json"
 TIMEOUT = 15
 _lock = threading.Lock()  # two people saving at the same moment must not overwrite each other's file changes
 
@@ -150,3 +151,65 @@ def save_subscription(name, sub, path=None):
     if r.status_code in (200, 201, 204):
         return True, "Saved."
     return False, "The database refused to save your choice. Please try again later."
+
+
+# ---- meter readings confirmed on the Meter assistant page ---------------------------------
+def load_meter_readings(name, path=None):
+    """This user's [{"read_on": "YYYY-MM-DD", "reading_kwh", "source"}], oldest first; None when the database cannot be reached."""
+    cfg = _remote(path)
+    if not cfg:
+        rows = _read_json(path or METER_READINGS_FILE).get(name, [])
+        return sorted(rows, key=lambda r: r["read_on"])
+    url, key = cfg
+    try:
+        r = requests.get(f"{url}/rest/v1/meter_readings",
+                         params={"select": "read_on,reading_kwh,source", "username": f"eq.{name}", "order": "read_on.asc"},
+                         headers=_headers(key), timeout=TIMEOUT)
+        r.raise_for_status()
+        return [{"read_on": m["read_on"], "reading_kwh": float(m["reading_kwh"]), "source": m["source"]} for m in r.json()]
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        return None
+
+
+def add_meter_reading(name, read_on, reading_kwh, source, path=None):
+    """Saves one reading (one per day for each user). Returns (ok, message)."""
+    row = {"read_on": read_on, "reading_kwh": reading_kwh, "source": source}
+    cfg = _remote(path)
+    if not cfg:
+        with _lock:
+            data = _read_json(path or METER_READINGS_FILE)
+            if any(r["read_on"] == read_on for r in data.get(name, [])):
+                return False, "You already have a reading on this date."
+            data.setdefault(name, []).append(row)
+            _write_json(path or METER_READINGS_FILE, data)
+        return True, "Saved."
+    url, key = cfg
+    try:
+        r = requests.post(f"{url}/rest/v1/meter_readings", json={"username": name, **row},
+                          headers=_headers(key, Prefer="return=minimal"), timeout=TIMEOUT)
+    except requests.RequestException:
+        return False, "Could not reach the database. Please try again."
+    if r.status_code == 409:
+        return False, "You already have a reading on this date."
+    if r.status_code in (200, 201, 204):
+        return True, "Saved."
+    return False, "The database refused to save your reading. Please try again later."
+
+
+def delete_meter_reading(name, read_on, path=None):
+    """Removes one reading, for correcting a mistake. Returns (ok, message)."""
+    cfg = _remote(path)
+    if not cfg:
+        with _lock:
+            data = _read_json(path or METER_READINGS_FILE)
+            data[name] = [r for r in data.get(name, []) if r["read_on"] != read_on]
+            _write_json(path or METER_READINGS_FILE, data)
+        return True, "Deleted."
+    url, key = cfg
+    try:
+        r = requests.delete(f"{url}/rest/v1/meter_readings",
+                            params={"username": f"eq.{name}", "read_on": f"eq.{read_on}"},
+                            headers=_headers(key, Prefer="return=minimal"), timeout=TIMEOUT)
+    except requests.RequestException:
+        return False, "Could not reach the database. Please try again."
+    return (True, "Deleted.") if r.status_code in (200, 204) else (False, "The database refused to delete it. Please try again later.")

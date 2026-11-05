@@ -5,8 +5,17 @@ XGBoost, detects unusual hours, raises alerts, shows energy per appliance and si
 Graduation project (Big Data / energy analytics).
 
 ## Pages
-Home, Analytics, Appliances, Forecast, Anomalies, Alerts, Live, Pipeline monitor (admin), About project.
+Home, Bill & Budget, Reports, Meter assistant, Analytics, Appliances, Forecast, Anomalies, Alerts, Live,
+Pipeline monitor (admin), About project.
 Login with admin / viewer roles; light and dark mode (menu top right).
+
+## Meter assistant
+A chatbot (`meter_assistant.py`, Groq API) that reads a photo of the meter or a reading typed in the chat, and
+explains the user's consumption with advice. The model only proposes a reading: the user confirms it before it is saved.
+The code works out kWh, bill and CO2 (`billing.py`), and the model explains those numbers without calculating them.
+It needs `[groq] api_key` in the secrets and has daily limits, so requests are limited per visit. Without the key
+the page still saves typed readings and shows the numbers. With Supabase, run `supabase_setup.sql` again to add the
+`meter_readings` table.
 
 ## Data
 - `data/household_power_consumption.zip` - UCI "Individual Household Electric Power Consumption"
@@ -18,7 +27,7 @@ Login with admin / viewer roles; light and dark mode (menu top right).
 py -m pip install -r requirements.txt
 py -m streamlit run app.py
 ```
-Tests: `py test_ml_local.py` and `py test_live_local.py`.
+Tests: `py test_ml_local.py`, `py test_live_local.py`, `py test_meter_assistant_local.py` and the other `test_*_local.py`.
 
 ## Settings and secrets
 Copy `secrets.toml.example` to `.streamlit/secrets.toml` (never upload it). Login users are added with

@@ -3,13 +3,13 @@ i18n.py - English / Arabic. The app is written in English; T("English text") giv
 user picked العربية (and the English text itself when there is no translation yet). Texts with {name} are
 filled in: T("Expected for {month}", month=...). Dates: month_year() / day_month() / weekday().
 
-Stage A (translated): login, menu, sidebar, Home, Bill & Budget, Reports, and the reports themselves.
+Stage A (translated): login, menu, sidebar, Home, Bill & Budget, Reports, Meter assistant, and the reports themselves.
 The other pages show an "English for now" note in Arabic mode.
 """
 
 AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
 AR_DAYS = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]  # Monday first, like pandas
-TRANSLATED_PAGES = {"home", "bill", "reports"}
+TRANSLATED_PAGES = {"home", "bill", "reports", "assistant"}
 
 
 def lang():
@@ -306,4 +306,65 @@ AR = {
         "انسخها كلها في سر GitHub باسم REPORT_SUBSCRIBERS (المستودع ← Settings ← Secrets and variables ← Actions)؛ "
         "وبعدها يرسل GitHub هذه التقارير في موعدها.",
     "Nobody has saved a choice yet.": "لم يحفظ أحد اختياره بعد.",
+
+    # ---- Meter assistant
+    "Meter assistant": "مساعد العداد",
+    "Send a photo of your meter or type the reading, then ask how to lower your bill.":
+        "أرسل صورة عدادك أو اكتب القراءة، ثم اسأل كيف تقلل فاتورتك.",
+    "Last reading": "آخر قراءة",
+    "Use per day": "الاستهلاك في اليوم",
+    "{x} from the period before": "{x} عن الفترة السابقة",
+    "From your last two readings: {k} kWh in {d} days.": "من آخر قراءتين: {k} ك.و.س في {d} يومًا.",
+    "A month at this rate": "شهر بهذا المعدل",
+    "30 days at your use per day.": "30 يومًا باستهلاكك اليومي.",
+    "Expected bill": "الفاتورة المتوقعة",
+    "Tariff and budget come from the Bill & Budget page.": "التعريفة والميزانية من صفحة الفاتورة والميزانية.",
+    "Your last two readings are less than a week apart, so these numbers are less certain.":
+        "الفرق بين آخر قراءتين أقل من أسبوع، لذلك هذه الأرقام أقل دقة.",
+    "First reading saved: {r} kWh. Send another one after a few days to see your consumption.":
+        "تم حفظ أول قراءة: {r} ك.و.س. أرسل قراءة أخرى بعد بضعة أيام لترى استهلاكك.",
+    "Start with a photo of your meter, or type the reading. Consumption is the difference between two readings, so you "
+    "will see your numbers from the second one.":
+        "ابدأ بصورة لعدادك أو اكتب القراءة. الاستهلاك هو الفرق بين قراءتين، لذلك ستظهر أرقامك من القراءة الثانية.",
+    "Photo of your meter": "صورة العداد",
+    "The photo is sent to the Groq API to read it, and is not saved by this app.":
+        "تُرسل الصورة إلى Groq API لقراءتها، ولا يحفظها هذا التطبيق.",
+    "Read the photo": "اقرأ الصورة",
+    "Type a reading": "اكتب قراءة",
+    "The chat and photo reading need an API key: add [groq] to secrets.toml (see secrets.toml.example).":
+        "المحادثة وقراءة الصور تحتاجان إلى مفتاح API: أضف [groq] إلى secrets.toml (راجع secrets.toml.example).",
+    "Reading the meter...": "جارٍ قراءة العداد...",
+    "This file is not an image the app can open.": "لا يستطيع التطبيق فتح هذا الملف كصورة.",
+    "My readings ({n})": "قراءاتي ({n})",
+    "Date": "التاريخ",
+    "Reading (kWh)": "القراءة (ك.و.س)",
+    "Source": "المصدر",
+    "photo": "صورة",
+    "chat": "محادثة",
+    "manual": "يدوي",
+    "Delete the last reading": "احذف آخر قراءة",
+    "Thinking...": "جارٍ التفكير...",
+    "Please check the reading below.": "من فضلك راجع القراءة بالأسفل.",
+    "Is this reading right?": "هل هذه القراءة صحيحة؟",
+    "Date of the reading": "تاريخ القراءة",
+    "This means more than {n} kWh a day. Please check the digits.": "هذا يعني أكثر من {n} ك.و.س في اليوم. من فضلك راجع الأرقام.",
+    "Confirm and save": "تأكيد وحفظ",
+    "Cancel": "إلغاء",
+    "Saved: {r} kWh on {d}.": "تم الحفظ: {r} ك.و.س بتاريخ {d}.",
+    "Ask about your electricity, or write your meter reading": "اسأل عن استهلاكك، أو اكتب قراءة عدادك",
+    "You reached the assistant's limit of {n} requests per visit. Log in again to continue.":
+        "وصلت إلى حد المساعد وهو {n} طلبًا في كل زيارة. سجّل الدخول مرة أخرى للمتابعة.",
+    "This does not look like a meter reading.": "لا يبدو هذا قراءة عداد.",
+    "The date cannot be in the future.": "لا يمكن أن يكون التاريخ في المستقبل.",
+    "The date must be after your last reading.": "يجب أن يكون التاريخ بعد آخر قراءة.",
+    "A meter only counts up: this is lower than your last reading. Delete the last one if it was wrong.":
+        "العداد يزيد فقط: هذه القراءة أقل من آخر قراءة. احذف الأخيرة إذا كانت خطأ.",
+    "You already have a reading on this date.": "لديك قراءة بهذا التاريخ بالفعل.",
+    "The database refused to save your reading. Please try again later.": "رفضت قاعدة البيانات حفظ القراءة. حاول لاحقًا.",
+    "The database refused to delete it. Please try again later.": "رفضت قاعدة البيانات حذفها. حاول لاحقًا.",
+    "The assistant's API key is not valid.": "مفتاح API الخاص بالمساعد غير صالح.",
+    "The assistant is busy. Please try again in a minute.": "المساعد مشغول. حاول مرة أخرى بعد دقيقة.",
+    "Could not reach the assistant. Check the internet connection.": "تعذّر الوصول إلى المساعد. تأكد من الاتصال بالإنترنت.",
+    "The assistant could not answer. Please try again later.": "لم يتمكن المساعد من الرد. حاول لاحقًا.",
+    "The assistant could not answer that. Please ask in another way.": "لم يتمكن المساعد من الرد على هذا. جرّب صيغة أخرى.",
 }

@@ -2,6 +2,9 @@
 .streamlit/secrets.toml
 .streamlit/app_users.json
 .streamlit/report_subscriptions.json
+.streamlit/meter_readings.json
+# ESP32 Wi-Fi password + key
+hardware/**/secrets.h
 # output of pipeline.py (GitHub keeps it as a run artifact)
 curated/
 .streamlit/*.tmp
