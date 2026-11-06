@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Energy</title>
+<meta name="apple-mobile-web-app-title" content="Smart Energy">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#060405">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #060405; color: #F7F5F3; font-family: 'Segoe UI', system-ui, Tahoma, sans-serif; text-align: center; }
+main { padding: 24px; max-width: 420px; }
+img { width: 112px; height: 112px; border-radius: 26px; }
+h1 { margin: 18px 0 22px; font-size: 30px; font-weight: 600; }
+a { display: block; padding: 15px; border-radius: 12px; background: #FF5362; color: #0A0506; font-size: 18px; font-weight: 600; text-decoration: none; }
+p { margin: 22px 0 0; color: #DDD6D2; font-size: 15px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<main>
+  <img src="icon-192.png" alt="Smart Energy logo">
+  <h1>Smart Energy</h1>
+  <a href="https://smart-energy-habiba.streamlit.app/">Open Smart Energy</a>
+  <p>iPhone: Share, then Add to Home Screen.<br>Android: browser menu, then Add to Home screen.</p>
+  <p dir="rtl">آيفون: مشاركة ثم إضافة إلى الشاشة الرئيسية.<br>أندرويد: قائمة المتصفح ثم إضافة إلى الشاشة الرئيسية.</p>
+</main>
+<script>
+// Opened from the home-screen icon: go straight to the website. In a normal browser, stay so the icon can be added.
+if (window.navigator.standalone || window.matchMedia("(display-mode: standalone)").matches) {
+  window.location.replace("https://smart-energy-habiba.streamlit.app/");
+}
+</script>
+</body>
+</html>
