@@ -15,7 +15,7 @@ import pandas
 import sklearn
 import xgboost
 
-CACHE_PATH = Path(__file__).parent / "prepared" / "startup_cache.joblib"
+CACHE_PATH = Path(__file__).parent / "startup_cache.joblib"
 FORMAT = 1
 
 
