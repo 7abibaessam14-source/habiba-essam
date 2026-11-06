@@ -20,7 +20,7 @@ report_images/
 # trained models (test_ml_local.py writes best_model.joblib)
 *.joblib
 # ...except the small saved startup file (startup_cache.py), which is meant to be uploaded
-!prepared/startup_cache.joblib
+!startup_cache.joblib
 
 # Python cache
 __pycache__/
