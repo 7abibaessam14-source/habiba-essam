@@ -54,7 +54,7 @@ from reports import (CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build
                      today_series)
 
 APP_NAME = "Smart Energy Monitor"
-st.set_page_config(page_title=APP_NAME, page_icon="⚡", layout="wide")
+st.set_page_config(page_title=APP_NAME, page_icon=str(Path(__file__).parent / "assets" / "icon.svg"), layout="wide")
 st.session_state.setdefault("lang", "en")  # English / Arabic (i18n.py), chosen on the login page or in the sidebar
 st.session_state["lang"] = st.session_state["lang"]
 for _k, _v in {"theme_mode": "Dark", "theme_color": "Red"}.items():  # the look the user picked (theme.py), kept for the whole visit
@@ -277,7 +277,8 @@ STATE_COLORS = {
 
 
 # ---- Login first: nothing is loaded before someone is logged in ---------------
-st.logo(str(ASSETS / "logo.svg"), icon_image=str(ASSETS / "icon.svg"), size="large")
+st.logo(theme.logo_svg(st.session_state.theme_mode, st.session_state.theme_color),
+        icon_image=theme.icon_svg(st.session_state.theme_color), size="large")
 PAGE_URLS = ["home", "bill", "reports", "assistant", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
 if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which

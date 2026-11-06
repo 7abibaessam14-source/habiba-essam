@@ -217,6 +217,29 @@ CHARTS = _svg(
 SCENES = {"bill": BILLS, "assistant": WIRES, "reports": ENVELOPES}
 
 
+def _h_mark(color):
+    """The logo: an H, its white bars with circuit lines, joined by a curved wire. The tile stays dark in both modes."""
+    c = SWATCH[color]
+    return (f'<rect width="512" height="512" rx="112" fill="#0E1726"/>'
+            f'<rect x="92" y="96" width="72" height="320" rx="20" fill="#F7F5F3"/><rect x="348" y="96" width="72" height="320" rx="20" fill="#F7F5F3"/>'
+            f'<path d="M128 130 V206 M128 306 V382 M384 130 V206 M384 306 V382" stroke="#0E1726" stroke-width="12" stroke-linecap="round"/>'
+            f'<circle cx="128" cy="130" r="13" fill="{c}"/><circle cx="128" cy="382" r="13" fill="{c}"/>'
+            f'<circle cx="384" cy="130" r="13" fill="{c}"/><circle cx="384" cy="382" r="13" fill="{c}"/>'
+            f'<path d="M164 256 C200 180 226 180 256 256 S312 332 348 256" fill="none" stroke="{c}" stroke-width="28" stroke-linecap="round"/>'
+            f'<circle cx="164" cy="256" r="24" fill="{c}"/><circle cx="348" cy="256" r="24" fill="{c}"/>')
+
+
+def icon_svg(color="Red"):
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">{_h_mark(color)}</svg>'
+
+
+def logo_svg(mode="Dark", color="Red"):
+    ink = (LIGHT if mode == "Light" else DARK)["ink"]
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" width="200" height="40">'
+            f'<svg x="1" y="1" width="38" height="38" viewBox="0 0 512 512">{_h_mark(color)}</svg>'
+            f'<text x="46" y="27" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="{ink}">Smart Energy</text></svg>')
+
+
 def accent(mode, color):
     return LIGHT_ACCENT[color] if mode == "Light" else SWATCH[color]
 

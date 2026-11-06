@@ -63,6 +63,12 @@ check("Arabic moves the house to the left", "scaleX(-1)" in theme.art_css("home"
 check("English keeps the house on the right", "scaleX(-1)" not in theme.art_css("home", "Dark", "Red"))
 check("Arabic does not mirror the EGP on the bills", "scaleX(-1)" not in theme.art_css("bill", "Dark", "Red", rtl=True))
 
+for c in theme.COLORS:
+    check(f"{c}: the logo is valid and uses the color", theme.SWATCH[c] in theme.logo_svg("Dark", c) and ET.fromstring(theme.logo_svg("Dark", c)) is not None)
+    check(f"{c}: the icon is valid and uses the color", theme.SWATCH[c] in theme.icon_svg(c) and ET.fromstring(theme.icon_svg(c)) is not None)
+check("the logo name is readable in dark", theme.DARK["ink"] in theme.logo_svg("Dark"))
+check("the logo name is readable in light", theme.LIGHT["ink"] in theme.logo_svg("Light"))
+
 house = theme.scene_for("home", "kitchen")
 check("the chosen part of the house is bright", 'fill-opacity="1" d="M932' in house)
 check("the other parts are dim", 'fill-opacity="0.22" d="M1009' in house and 'fill-opacity="0.22" d="M1189' in house)
