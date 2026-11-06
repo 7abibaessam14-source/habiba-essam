@@ -47,6 +47,7 @@ import meter_assistant
 from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
                        train_and_compare)
 import notify
+import startup_cache
 import store
 import theme
 from i18n import RTL_CSS, TRANSLATED_PAGES, T, day_month, is_ar, language_switch, month_name, month_year
@@ -187,11 +188,20 @@ def load_all():
         return None, None, None, str(e)
 
 
+@st.cache_resource(show_spinner=False)
+def startup_bundle():
+    uci = uci_path(DATA_DIR)
+    return startup_cache.load(uci) if uci is not None else None
+
+
 @st.cache_data(show_spinner="Reading the data files (first time only)...")
 def local_frames(signature):
     # signature is only a cache key: it changes when the files in ./data change
     uci = uci_path(DATA_DIR)  # the .txt on your PC, or the .zip copy on the online version
     if uci is not None:
+        ready = startup_bundle()  # the saved copy when it fits, so the 2 million rows are not read at every start
+        if ready is not None:
+            return ready["fact"], ready["agg"], ready["households"], "UCI file (data folder)"
         return (*load_uci(uci), "UCI file (data folder)")
     res = load_csv_folder(DATA_DIR, max_households=CSV_MAX_HOUSEHOLDS)
     return None if res is None else (*res, "CSV files (data folder)")
@@ -214,6 +224,9 @@ def hourly_for(household_key, _df, n_rows):
 
 @st.cache_resource(max_entries=10, show_spinner="Training Random Forest / XGBoost...")
 def train_for(household_key, _hourly, n_hours):
+    ready = startup_bundle()
+    if ready is not None and household_key == ALL_LABEL and n_hours == ready["n_hours"] and source_name.startswith("UCI"):
+        return ready["res"]  # the saved models for exactly this data: no need to train again
     feats = add_features(_hourly)
     if len(feats) < 500:
         raise ValueError(
