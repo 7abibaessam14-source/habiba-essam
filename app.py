@@ -1,7 +1,7 @@
 """
 Smart Energy Monitor - Streamlit app (v3)
 
-Pages (sidebar menu, only the open page runs)
+Pages (tabs at the top, only the open page runs; the look is in theme.py)
   Home              project summary: data source, key numbers, quick links
   Bill & Budget     bill in EGP, month-end projection, budget alerts, saving tips
   Reports           daily / weekly / monthly report by Gmail, WhatsApp or SMS (preview, send now, save)
@@ -41,13 +41,14 @@ from demo_data import make_demo_frames
 from uci_loader import APPLIANCE_COLUMNS, UCI_FILENAME, load_uci, uci_path, uci_signature
 from alerts import build_alerts, compute_threshold, send_email_alert
 import auth
-from billing import CO2_KG_PER_KWH, CO2_KG_PER_TREE_YEAR, EGYPT_TIERS, bill_egp, co2_kg, month_projection, saving_tips
+from billing import CO2_KG_PER_KWH, CO2_KG_PER_TREE_YEAR, EGYPT_TIERS, bill_egp, co2_kg, month_projection, next_tier, saving_tips
 from live import LiveReplay
 import meter_assistant
 from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
                        train_and_compare)
 import notify
 import store
+import theme
 from i18n import RTL_CSS, TRANSLATED_PAGES, T, day_month, is_ar, language_switch, month_name, month_year
 from reports import (CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, note, now_local, sms_parts,
                      today_series)
@@ -56,6 +57,9 @@ APP_NAME = "Smart Energy Monitor"
 st.set_page_config(page_title=APP_NAME, page_icon="⚡", layout="wide")
 st.session_state.setdefault("lang", "en")  # English / Arabic (i18n.py), chosen on the login page or in the sidebar
 st.session_state["lang"] = st.session_state["lang"]
+for _k, _v in {"theme_mode": "Dark", "theme_color": "Red"}.items():  # the look the user picked (theme.py), kept for the whole visit
+    st.session_state.setdefault(_k, _v)
+    st.session_state[_k] = st.session_state[_k]
 
 ALL_LABEL = "All households (average)"
 ASSETS = Path(__file__).parent / "assets"
@@ -279,6 +283,7 @@ if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which
     # Streamlit would otherwise keep showing) and a link like /live opens that page after logging in.
     def _login():
+        theme.apply("home", st.session_state.theme_mode, st.session_state.theme_color, rtl=is_ar())
         if is_ar():
             st.markdown(RTL_CSS, unsafe_allow_html=True)
         auth.login_page(f"⚡ {APP_NAME}", "Smart-meter electricity pipeline - graduation project")
@@ -960,6 +965,25 @@ APPLIANCE_ESTIMATE_DEFAULTS = pd.DataFrame(
 )
 
 
+def bill_whatif(proj, tiers, flat):
+    """Drag the monthly use: the bill and the price tier change right away (same calculation as the bill above)."""
+    egp, kwh_unit = T("EGP"), T("kWh")
+    with st.container(key="card_whatif"):
+        st.subheader(T("What would your bill be?"))
+        st.session_state.setdefault("bill_whatif", int(min(round(proj["projected_kwh"], -1), 1500)))
+        kwh = st.slider(T("Monthly use ({unit})", unit=kwh_unit), 0, 1500, step=10, key="bill_whatif")
+        c1, c2 = st.columns([1, 2], vertical_alignment="center")
+        c1.metric(T("Estimated bill"), f"{bill_egp(kwh, tiers, flat):,.0f} {egp}")
+        if flat is None:
+            nt = next_tier(kwh, tiers)
+            c2.markdown(T("{x} kWh left before the price rises to {p} EGP per kWh.", x=f"{nt[0] - kwh:,}", p=f"{nt[1]:.2f}")
+                        if nt else T("You are in the highest price tier."))
+            current = next(i for i, (upper, _) in enumerate(tiers) if upper is None or kwh < upper)
+            st.html('<div class="energy-tiers">' + "".join(
+                f'<div class="{"on" if i == current else ""}">{price:.2f}</div>' for i, (_, price) in enumerate(tiers)) + "</div>")
+            st.caption(T("EGP per kWh in each price tier"))
+
+
 def render_bill():
     try:
         hourly, res = get_ml()
@@ -1024,6 +1048,8 @@ def render_bill():
                   t=f"{month_co2 * 12 / CO2_KG_PER_TREE_YEAR:,.0f}"),
                 help=T("Estimate: {f} kg CO₂ per kWh for Egypt's mostly natural-gas power, one tree absorbs about "
                        "{t} kg CO₂ a year.", f=CO2_KG_PER_KWH, t=CO2_KG_PER_TREE_YEAR))
+
+    bill_whatif(proj, tiers, flat)
 
     # cumulative bill through the month: actual days, then expected days, against the budget
     actual, expected = T("actual"), T("expected")
@@ -1355,12 +1381,54 @@ def render_assistant():
         st.rerun()
 
 
+def _pick_area(name):
+    st.session_state.home_area = name
+
+
+def home_energy_row():
+    """Today's use by hour and where this month's energy goes; picking a row lights that part of the house."""
+    try:
+        hourly, res = get_ml()
+    except Exception:  # render_home shows the message
+        return
+    proj, _, _, series, offset = bill_summary(hourly, res)
+    today = series.loc[proj["as_of"]: proj["as_of"] + pd.Timedelta(hours=23)].dropna()
+    kwh_unit = T("kWh")
+    left, right = st.columns([3, 2])
+    with left, st.container(key="card_day"):
+        st.subheader(T("Your day"))
+        if len(today):
+            st.metric(T("Last hour"), f"{today.iloc[-1]:.2f} {kwh_unit}")
+            day = pd.DataFrame({"time": today.index, "kwh": today.values})
+            st.altair_chart(
+                alt.Chart(day).mark_bar(color=theme.SWATCH[st.session_state.theme_color], cornerRadiusEnd=3).encode(
+                    x=alt.X("hours(time):O", title=None), y=alt.Y("kwh:Q", title=kwh_unit),
+                    tooltip=[alt.Tooltip("time:T", format="%H:%M"), alt.Tooltip("kwh:Q", format=".2f")],
+                ).properties(height=190),
+                width="stretch",
+            )
+    apps = appliance_month_kwh(proj, offset)
+    if apps:
+        total = sum(apps.values())
+        with right, st.container(key="card_where"):
+            st.subheader(T("Where it goes"))
+            st.caption(T("This month"))
+            for i, (name, kwh) in enumerate(sorted(apps.items(), key=lambda kv: -kv[1])):
+                chosen = st.session_state.get("home_area") == name
+                st.button(f"{T(name)} · {kwh / total:.0%}", key=f"home_area_{i}", on_click=_pick_area, args=(name,),
+                          type="primary" if chosen else "secondary", width="stretch")
+                st.progress(kwh / total)
+
+
 def render_home():
-    st.title(f"⚡ {APP_NAME}")
-    st.caption(T(
+    hero, _ = st.columns([3, 2])
+    hero.html(f'<h1 class="energy-hero">{T("Power you can")} <em>{T("finally see.")}</em></h1>')
+    hero.caption(T(
         "Smart-meter electricity pipeline: Azure Data Lake → Spark → Airflow → Snowflake → this dashboard, "
         "with machine learning, alerts and live monitoring on top."
     ))
+    st.space("large")
+    home_energy_row()
     egp = T("EGP")
 
     with st.container(border=True):
@@ -1420,11 +1488,11 @@ def render_home():
     with st.expander(T("How to use this dashboard")):
         st.markdown(
             T("HOW_TO") if is_ar() else
-            "1. Pick a page from the menu on the left.\n"
+            "1. Pick a page from the tabs at the top.\n"
             "2. On the ML pages (Forecast, Anomalies, Alerts, Live), choose the household in the sidebar.\n"
             "3. On **Live**, press **Start** to replay the meter readings; **Spike** adds +3 kWh to show an alert on demand.\n"
             "4. Charts: drag to move, **Ctrl + mouse wheel** to zoom, **Reset zoom** to go back.\n"
-            "5. Light / dark mode: the **⋮** menu (top right) → **Light** or **Dark**."
+            "5. Dark or Light and your color: at the top of every page."
         )
 
 
@@ -1521,12 +1589,11 @@ PAGES = {
 monitoring = [PAGES["Live"]] + ([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
 pg = st.navigation(
     {
-        T("Overview"): [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Reports"], PAGES["Meter assistant"]],
-        T("Analysis"): [PAGES["Analytics"], PAGES["Appliances"]],
-        T("Machine learning"): [PAGES["Forecast"], PAGES["Anomalies"], PAGES["Alerts"]],
-        T("Monitoring"): monitoring,
-        T("Project"): [PAGES["About project"]],
-    }
+        "": [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Meter assistant"], PAGES["Reports"]],
+        T("Insights"): [PAGES["Forecast"], PAGES["Appliances"], PAGES["Analytics"], PAGES["Anomalies"], PAGES["Alerts"],
+                        *monitoring, PAGES["About project"]],
+    },
+    position="top",
 )
 page_key = pg.url_path or "home"  # the default page's url_path is ""; titles change with the language
 
@@ -1550,7 +1617,6 @@ if data_error is None and page_key in ("forecast", "anomalies", "alerts", "live"
 
 with st.sidebar:
     st.divider()
-    language_switch()
     st.caption(f":material/database: {T('Data: {source}', source=source_name)}")
     if auth.login_enabled():
         user = auth.current_user()
@@ -1560,7 +1626,16 @@ with st.sidebar:
             st.rerun()
     else:
         st.warning("Login is off: add [auth] users to secrets.toml (see secrets.toml.example).", icon="🔓")
-    st.caption(T("Light / dark mode: ⋮ menu (top right) → Light or Dark."))
+
+# ---- The look: the page's moving background, then Dark / Light, color and language --
+theme.apply(page_key, st.session_state.theme_mode, st.session_state.theme_color,
+            theme.WINDOWS.get(st.session_state.get("home_area")), is_ar())
+with st.container(key="energy_controls", horizontal=True, horizontal_alignment="right"):
+    st.radio(T("Dark or light mode"), theme.MODES, key="theme_mode", horizontal=True, format_func=T,
+             label_visibility="collapsed", width="content")
+    st.radio(T("Color"), theme.COLORS, key="theme_color", horizontal=True, format_func=T,
+             label_visibility="collapsed", width="content")
+    language_switch()
 
 # ---- The open page ------------------------------------------------------------
 if is_ar():  # right-to-left and an Arabic font; pages not translated yet keep the English layout

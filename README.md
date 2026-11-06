@@ -7,7 +7,7 @@ Graduation project (Big Data / energy analytics).
 ## Pages
 Home, Bill & Budget, Reports, Meter assistant, Analytics, Appliances, Forecast, Anomalies, Alerts, Live,
 Pipeline monitor (admin), About project.
-Login with admin / viewer roles; light and dark mode (menu top right).
+Login with admin / viewer roles. Tabs at the top; Dark / Light, a color and a moving background for each page (`theme.py`).
 
 ## Meter assistant
 A chatbot (`meter_assistant.py`, Groq API) that reads a photo of the meter or a reading typed in the chat, and

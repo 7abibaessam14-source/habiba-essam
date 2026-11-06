@@ -51,7 +51,7 @@ def language_switch(container=None):
     import streamlit as st
 
     (container or st).radio("Language / اللغة", ["en", "ar"], key="lang", horizontal=True,
-                            format_func=lambda c: {"en": "English", "ar": "العربية"}[c], label_visibility="collapsed")
+                            format_func=lambda c: {"en": "English", "ar": "العربية"}[c], label_visibility="collapsed", width="content")
 
 
 RTL_CSS = """
@@ -75,6 +75,28 @@ AR = {
     "Machine learning": "تعلّم الآلة",
     "Monitoring": "المراقبة",
     "Project": "المشروع",
+    "Insights": "رؤى",
+    "Dark or light mode": "الوضع الداكن أو الفاتح",
+    "Color": "اللون",
+    "Dark": "داكن",
+    "Light": "فاتح",
+    "Red": "أحمر",
+    "Teal": "تركواز",
+    "Lime": "ليموني",
+    "Gold": "ذهبي",
+    "Violet": "بنفسجي",
+    "Power you can": "طاقتك",
+    "finally see.": "أخيرًا قدّام عينيك.",
+    "Your day": "يومك",
+    "Last hour": "آخر ساعة",
+    "Where it goes": "الكهرباء بتروح فين",
+    "This month": "هذا الشهر",
+    "What would your bill be?": "فاتورتك هتبقى كام؟",
+    "Monthly use ({unit})": "الاستهلاك الشهري ({unit})",
+    "Estimated bill": "الفاتورة التقديرية",
+    "{x} kWh left before the price rises to {p} EGP per kWh.": "فاضل {x} ك.و.س قبل ما السعر يزيد إلى {p} جنيه لكل ك.و.س.",
+    "You are in the highest price tier.": "أنت في أعلى شريحة سعر.",
+    "EGP per kWh in each price tier": "جنيه لكل ك.و.س في كل شريحة",
     "Home": "الرئيسية",
     "Bill & Budget": "الفاتورة والميزانية",
     "Reports": "التقارير",
@@ -174,11 +196,11 @@ AR = {
     "Check your bill": "راجع فاتورتك",
     "How it works": "كيف يعمل المشروع",
     "How to use this dashboard": "طريقة استخدام اللوحة",
-    "HOW_TO": "1. اختر صفحة من القائمة الجانبية.\n"
+    "HOW_TO": "1. اختر صفحة من التبويبات في الأعلى.\n"
               "2. في صفحات تعلّم الآلة (التنبؤ، القراءات غير الطبيعية، التنبيهات، المراقبة المباشرة) اختر المنزل من القائمة الجانبية.\n"
               "3. في **المراقبة المباشرة** اضغط **Start** لإعادة تشغيل قراءات العداد، و**Spike** يضيف 3+ ك.و.س لإظهار تنبيه.\n"
               "4. الرسوم البيانية: اسحب للتحريك، و**Ctrl + عجلة الفأرة** للتكبير، و**Reset zoom** للرجوع.\n"
-              "5. الوضع الفاتح / الداكن: قائمة **⋮** (أعلى الصفحة) ← **Light** أو **Dark**.",
+              "5. الوضع الداكن أو الفاتح واللون: في أعلى كل صفحة.",
 
     # ---- Bill & Budget
     "Tariff": "التعريفة",
