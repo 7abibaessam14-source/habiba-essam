@@ -82,8 +82,8 @@ BASE_CSS = """
 .stApp button[data-testid^="stBaseButton"]:hover { border-color: var(--accent); }
 .stApp [data-testid="stSlider"] [role="slider"] { background: var(--accent); }
 .stApp [data-testid="stSliderThumbValue"], .stApp [data-testid="stSliderTickBarMin"], .stApp [data-testid="stSliderTickBarMax"] { color: var(--ink); }
-.stApp [data-baseweb="tab"][aria-selected="true"] p { color: var(--accent); }
-.stApp [data-baseweb="tab-highlight"] { background: var(--accent); }
+.stApp [data-testid="stTab"][aria-selected="true"] p { color: var(--accent); }
+.stApp [data-testid="stTab"] .react-aria-SelectionIndicator { background: var(--accent); }
 .stApp [data-testid="stProgressBarTrack"] { background: var(--line); }
 .stApp [data-testid="stProgressBarTrack"] > div { background: var(--accent); }
 .stApp [data-testid="stRadioOption"] > div > div:first-child { background: var(--chip); border: 1px solid var(--line); }
@@ -95,7 +95,7 @@ BASE_CSS = """
 .stApp [data-testid="stTopNavLink"] span, .stApp [data-testid="stTopNavSection"] span { font-size: 1rem; }
 .stApp [data-testid="stTopNavLink"][aria-current="page"] { background: var(--accent); }
 .stApp [data-testid="stTopNavLink"][aria-current="page"] span { color: var(--on); }
-.stApp [data-testid="stAppDeployButton"] { display: none; }
+.stApp [data-testid="stAppDeployButton"], .stApp [data-testid="stToolbarActions"] { display: none; }
 /* Dark / Light, the color circles and the language, in one row */
 .st-key-energy_controls { gap: 6px 22px; align-items: center; }
 .st-key-theme_color [data-testid="stRadioGroup"], .st-key-theme_color [role="radiogroup"] { gap: 2px 8px; }

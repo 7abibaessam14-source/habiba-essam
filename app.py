@@ -62,6 +62,7 @@ for _k, _v in {"theme_mode": "Dark", "theme_color": "Red"}.items():  # the look 
     st.session_state[_k] = st.session_state[_k]
 
 ALL_LABEL = "All households (average)"
+GITHUB_REPO = "7abibaessam14-source/habiba-essam"
 ASSETS = Path(__file__).parent / "assets"
 DATA_DIR = Path(__file__).parent / "data"  # put the CSV files here to run without Snowflake
 CSV_MAX_HOUSEHOLDS = 60  # keeps the dashboard fast; raise it if your PC is strong
@@ -258,6 +259,19 @@ def airflow_status(base_url, dag_id, user, password):
     return f"{STATE_COLORS.get(runs[0]['state'], '⚪')} last run: {runs[0]['state']}"
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def pipeline_last_run():
+    """(conclusion, finish time) of the last weekly pipeline run, from GitHub's public API; None if it cannot be read."""
+    try:
+        resp = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/pipeline.yml/runs",
+                            params={"per_page": 1, "status": "completed"}, timeout=5)
+        resp.raise_for_status()
+        run = resp.json()["workflow_runs"][0]
+        return run["conclusion"], run["updated_at"]
+    except Exception:
+        return None
+
+
 def get_airflow_task_instances(base_url, dag_id, dag_run_id, user, password):
     url = f"{base_url}/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances"
     resp = requests.get(url, auth=(user, password), timeout=10)
@@ -287,7 +301,8 @@ if auth.current_user() is None:
         theme.apply("home", st.session_state.theme_mode, st.session_state.theme_color, rtl=is_ar())
         if is_ar():
             st.markdown(RTL_CSS, unsafe_allow_html=True)
-        auth.login_page(f"⚡ {APP_NAME}", "Smart-meter electricity pipeline - graduation project")
+        auth.login_page(APP_NAME, "Smart-meter electricity pipeline - graduation project",
+                        logo=theme.icon_svg(st.session_state.theme_color))
 
     st.navigation(
         [st.Page(_login, title="Log in", url_path=u, default=(u == "home")) for u in PAGE_URLS],
@@ -1432,11 +1447,17 @@ def render_home():
     home_energy_row()
     egp = T("EGP")
 
-    with st.container(border=True):
-        s1, s2, s3 = st.columns(3)
+    with st.container(key="card_status"):
+        s1, s2 = st.columns(2)
         s1.markdown(f"**{T('Data source')}**  \n{'⚠️' if source_name.startswith('DEMO') else '✅'} {source_name}")
-        s2.markdown(f"**Snowflake**  \n{'✅ ' + T('connected') if source_name == 'Snowflake' else '❌ ' + T('not connected')}")
-        s3.markdown(f"**{T('Airflow pipeline')}**  \n{airflow_status(*airflow_config())}")
+        last_run = pipeline_last_run()
+        if last_run is None:
+            run_text = "⚪ " + T("status not available right now")
+        else:
+            run_day = pd.Timestamp(last_run[1])
+            run_text = (("✅ " + T("last run succeeded on {day}", day=day_month(run_day))) if last_run[0] == "success"
+                        else ("❌ " + T("last run failed on {day}", day=day_month(run_day))))
+        s2.markdown(f"**{T('Weekly data pipeline')}**  \n{run_text}")
 
     st.subheader(T("The data"))
     dmin, dmax = fact_df["DateTime"].min(), fact_df["DateTime"].max()

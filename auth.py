@@ -160,10 +160,12 @@ def logout():
         st.logout()  # also removes the Google login cookie
 
 
-def login_page(title, subtitle):
+def login_page(title, subtitle, logo=None):
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
         language_switch()
+        if logo:
+            st.image(logo, width=64)
         st.header(title)
         st.caption(T(subtitle))
         if google_enabled():
