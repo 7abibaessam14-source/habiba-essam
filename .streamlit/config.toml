@@ -4,6 +4,7 @@
 # Restart Streamlit after changing this file.
 
 [theme]
+base = "dark"  # stays on dark: the website's own Dark / Light switch is done with CSS in theme.py
 baseRadius = "medium"
 showSidebarBorder = true
 
@@ -17,8 +18,8 @@ chartCategoricalColors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#7f7f7f",
 
 [theme.dark]
 primaryColor = "#2BB3C0"
-backgroundColor = "#0E1117"
-secondaryBackgroundColor = "#1A202B"
+backgroundColor = "#0B0809"
+secondaryBackgroundColor = "#1A1416"
 textColor = "#E6EAF0"
 borderColor = "#2C3442"
 chartCategoricalColors = ["#4C9BE8", "#FF9F40", "#4CC26A", "#F0605D", "#A0A7B4", "#B08CE0"]
