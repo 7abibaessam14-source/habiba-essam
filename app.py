@@ -47,6 +47,7 @@ import meter_assistant
 from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
                        train_and_compare)
 import notify
+import sensor
 import startup_cache
 import store
 import theme
@@ -306,7 +307,7 @@ STATE_COLORS = {
 # ---- Login first: nothing is loaded before someone is logged in ---------------
 st.logo(theme.logo_svg(st.session_state.theme_mode, st.session_state.theme_color),
         icon_image=theme.icon_svg(st.session_state.theme_color), size="large")
-PAGE_URLS = ["home", "bill", "reports", "assistant", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "pipeline", "about"]
+PAGE_URLS = ["home", "bill", "reports", "assistant", "analytics", "appliances", "forecast", "anomalies", "alerts", "live", "sensor", "pipeline", "about"]
 if auth.current_user() is None:
     # Every page address shows the login form, in a hidden menu: this replaces the app menu (which
     # Streamlit would otherwise keep showing) and a link like /live opens that page after logging in.
@@ -938,6 +939,60 @@ def render_live():
             st.dataframe(live.alerts, hide_index=True, width="stretch")
 
     live_panel()
+
+
+def render_sensor():
+    """The real ESP32 + ACS712 readings from Supabase, refreshed every 5 seconds."""
+    c1, c2 = st.columns(2)
+    hours = c1.selectbox("Show the last", [1, 6, 24, 168], index=0,
+                         format_func=lambda h: "7 days" if h == 168 else f"{h} hour{'s' if h > 1 else ''}")
+    volts = c2.number_input("Supply voltage (V)", 1.0, 240.0, 12.0, 1.0,
+                            help="The sensor measures current only. Power is estimated as current x this voltage.")
+
+    @st.fragment(run_every=5)
+    def sensor_panel():
+        df, err = sensor.fetch_readings(hours)
+        if err:
+            st.warning(err)
+            return
+        s = sensor.summary(df, volts=volts)
+        if not s["has_data"]:
+            st.info("No readings in this period yet. Turn on the ESP32: it sends one reading every 5 seconds.")
+            return
+
+        if s["online"]:
+            st.success(f"**{s['device_id']}** is online · last reading {sensor.age_text(s['age_s'])}", icon=":material/wifi:")
+        else:
+            st.error(f"**{s['device_id']}** is offline · last reading {sensor.age_text(s['age_s'])}", icon=":material/wifi_off:")
+        if s["online"] and s["over"]:
+            st.error(f"Current is above the limit ({s['current_a']:.2f} A > {s['threshold_a']:.2f} A)", icon="🚨")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Current now", f"{s['current_a']:.2f} A", help="Average (RMS) current over the last 5 seconds.")
+        m2.metric("Power (estimate)", f"{s['watts']:.1f} W", help=f"Current x {volts:g} V.")
+        m3.metric("Peak in this period", f"{s['max_a']:.2f} A")
+        m4.metric("Readings above limit", f"{s['alerts']}", help=f"Out of {s['rows']} readings.")
+
+        show = df.assign(time=df["created_at"].dt.tz_convert("Africa/Cairo").dt.tz_localize(None))
+        line = alt.Chart(show).mark_line(point=len(show) < 60).encode(
+            x=alt.X("time:T", title=None),
+            y=alt.Y("current_a:Q", title="Current (A)"),
+            tooltip=[alt.Tooltip("time:T", format="%H:%M:%S"), alt.Tooltip("current_a:Q", format=".2f"),
+                     alt.Tooltip("peak_a:Q", format=".2f")],
+        )
+        limit = alt.Chart(pd.DataFrame({"limit": [s["threshold_a"]]})).mark_rule(
+            color="red", strokeDash=[4, 4]).encode(y="limit:Q")
+        st.altair_chart(line + limit, width="stretch")
+        wifi = f" Wi-Fi signal: {s['rssi_dbm']} dBm." if s["rssi_dbm"] is not None else ""
+        st.caption(f"Red dashed line = alert limit ({s['threshold_a']:.2f} A). Times are Cairo time.{wifi}")
+
+        with st.expander("Latest readings"):
+            st.dataframe(
+                show.sort_values("time", ascending=False).head(50)[
+                    ["time", "current_a", "peak_a", "over_threshold", "samples", "rssi_dbm"]],
+                hide_index=True, width="stretch")
+
+    sensor_panel()
 
 
 def render_monitor():
@@ -1616,12 +1671,13 @@ PAGES = {
     "Anomalies": st.Page(render_anomalies, title=T("Anomalies"), icon=":material/warning:", url_path="anomalies"),
     "Alerts": st.Page(render_alerts, title=T("Alerts"), icon=":material/notifications:", url_path="alerts"),
     "Live": st.Page(render_live, title=T("Live"), icon=":material/sensors:", url_path="live"),
+    "Sensor": st.Page(render_sensor, title=T("Sensor"), icon=":material/memory:", url_path="sensor"),
     "Pipeline monitor": st.Page(
         render_monitor, title=T("Pipeline monitor"), icon=":material/account_tree:", url_path="pipeline"
     ),
     "About project": st.Page(render_about, title=T("About project"), icon=":material/info:", url_path="about"),
 }
-monitoring = [PAGES["Live"]] + ([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
+monitoring = [PAGES["Sensor"], PAGES["Live"]] +([PAGES["Pipeline monitor"]] if auth.is_admin() else [])
 pg = st.navigation(
     {
         "": [PAGES["Home"], PAGES["Bill & Budget"], PAGES["Meter assistant"], PAGES["Reports"]],
@@ -1642,6 +1698,7 @@ PAGE_INTRO = {
     "anomalies": "Hours the model did not expect, found on data it never trained on.",
     "alerts": "Hours above the consumption limit, and anomaly alerts.",
     "live": "Simulated real-time monitoring.",
+    "sensor": "Real readings from the ESP32 + ACS712 current sensor, updated every 5 seconds.",
     "pipeline": "Live status of the Airflow pipeline, from the Airflow REST API.",
     "about": "How the project works, the data it uses and what is done.",
 }
