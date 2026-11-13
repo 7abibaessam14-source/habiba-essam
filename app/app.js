@@ -35,6 +35,8 @@
   let timer = null;
   let data = { readings: [], settings: null, events: [], error: null };
   let draft = null; // power save settings being edited
+  let isAdmin = false; // only the owner (table app_admins) may change power save; new accounts only view
+  let loginMode = "signin";
 
   // ---------- small helpers ----------
   function store(k, v) {
@@ -199,8 +201,11 @@
 
   function warningCard(ps) {
     return `<div class="card alertcard"><div class="t">Lamp 2 switches off in ${ps.left} s</div>
-      <div class="lbl" style="margin:4px 0 12px">Power save: current above ${data.settings.limit_a} A for ${data.settings.after_min} min</div>
-      <button class="btn" data-act="cancel">Cancel</button></div>`;
+      <div class="lbl" style="margin:4px 0 ${isAdmin ? 12 : 0}px">Power save: current above ${data.settings.limit_a} A for ${data.settings.after_min} min</div>
+      ${isAdmin ? '<button class="btn" data-act="cancel">Cancel</button>' : ""}</div>`;
+  }
+  function restoreButton() {
+    return isAdmin ? '<button class="btn" data-act="restore" style="margin-top:12px">Turn lamp 2 back on</button>' : "";
   }
 
   function screenNow() {
@@ -232,8 +237,7 @@
     let html = `<div class="head"><h1>Alerts</h1></div>`;
     if (ps.state === "warning") html += warningCard(ps);
     if (ps.state === "turned_off") {
-      html += `<div class="card alertcard"><div class="t">Lamp 2 is off (power save, ${fmtTime(ps.since)})</div>
-        <button class="btn" data-act="restore" style="margin-top:12px">Turn lamp 2 back on</button></div>`;
+      html += `<div class="card alertcard"><div class="t">Lamp 2 is off (power save, ${fmtTime(ps.since)})</div>${restoreButton()}</div>`;
     }
     const items = [];
     for (const e of data.events) items.push({ t: new Date(e.created_at), title: EVENT_TEXT[e.event] || e.event, sub: `Power save · ${(e.current_a || 0).toFixed(2)} A` });
@@ -256,8 +260,18 @@
     let html = `<div class="head"><h1>Power save</h1></div>`;
     if (ps.state === "warning") html += warningCard(ps);
     if (ps.state === "turned_off") {
-      html += `<div class="card alertcard"><div class="t">Lamp 2 is off since ${fmtTime(ps.since)}</div>
-        <button class="btn" data-act="restore" style="margin-top:12px">Turn lamp 2 back on</button></div>`;
+      html += `<div class="card alertcard"><div class="t">Lamp 2 is off since ${fmtTime(ps.since)}</div>${restoreButton()}</div>`;
+    }
+    if (!isAdmin) {
+      const s = data.settings || {};
+      return html + `<div class="card"><div class="field"><span>Power save mode</span><span class="pill">${s.enabled ? "On" : "Off"}</span></div>
+        <div class="field"><span class="lbl">Switch off above</span><span>${Number(s.limit_a).toFixed(1)} A</span></div>
+        <div class="field"><span class="lbl">For more than</span><span>${Number(s.after_min).toFixed(0)} min</span></div>
+        <div class="field"><span class="lbl">Warning first</span><span>${Number(s.warn_s).toFixed(0)} s</span></div></div>
+        <p class="small muted center" style="margin:0 0 12px">Only the owner can change power save.</p>
+        <div class="grid2" style="margin-bottom:12px"><div class="card"><div class="lbl">Saved (24 h)</div><div class="mid" style="color:var(--accent)">${savedWh().toFixed(1)} Wh</div></div>
+        <div class="card"><div class="lbl">Times off (24 h)</div><div class="mid">${times}</div></div></div>
+        ${colorCard()}${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     }
     html += `<div class="card"><div class="field"><span>Power save mode</span>
         <button class="switch ${draft.enabled ? "on" : ""}" data-act="toggle" aria-label="Power save mode" aria-pressed="${!!draft.enabled}"></button></div>
@@ -268,11 +282,14 @@
       <button class="btn" data-act="save" style="margin-bottom:12px">Save</button>
       <div class="grid2" style="margin-bottom:12px"><div class="card"><div class="lbl">Saved (24 h)</div><div class="mid" style="color:var(--accent)">${savedWh().toFixed(1)} Wh</div></div>
       <div class="card"><div class="lbl">Times off (24 h)</div><div class="mid">${times}</div></div></div>
-      <div class="card"><div class="lbl" style="margin-bottom:10px">App color</div><div class="swatches">
-      ${Object.keys(COLORS).map((n) => `<button class="swatch ${n === colorName() ? "sel" : ""}" data-color="${n}" aria-label="${n}" style="background:${COLORS[n][0]}"></button>`).join("")}
-      </div></div>
+      ${colorCard()}
       ${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     return html;
+  }
+  function colorCard() {
+    return `<div class="card"><div class="lbl" style="margin-bottom:10px">App color</div><div class="swatches">
+      ${Object.keys(COLORS).map((n) => `<button class="swatch ${n === colorName() ? "sel" : ""}" data-color="${n}" aria-label="${n}" style="background:${COLORS[n][0]}"></button>`).join("")}
+      </div></div>`;
   }
 
   function render() {
@@ -286,7 +303,7 @@
 
   async function refresh() {
     await load();
-    if (document.querySelector(".login")) return;
+    if (document.querySelector(".login")) return; // signed out meanwhile
     render();
   }
 
@@ -327,23 +344,46 @@
   // ---------- sign in ----------
   function showLogin(msg) {
     clearInterval(timer);
+    const up = loginMode === "signup";
     app.innerHTML = `<div class="login">
       <div class="center" style="margin-bottom:28px">${mark(96)}<div style="display:flex;justify-content:center;margin-top:14px">${wordmark(26)}</div></div>
+      <div class="seg"><button type="button" data-mode="signin" class="${up ? "" : "sel"}">Sign in</button>
+        <button type="button" data-mode="signup" class="${up ? "sel" : ""}">Create account</button></div>
       <form id="lf"><input id="em" type="email" autocomplete="username" placeholder="Email" required>
-      <input id="pw" type="password" autocomplete="current-password" placeholder="Password" required>
-      <div class="err" id="er">${msg ? esc(msg) : ""}</div><button class="btn" type="submit">Sign in</button></form>
-      <p class="small muted center" style="margin-top:18px">Only accounts added by the project owner can sign in.</p></div>`;
+      <input id="pw" type="password" autocomplete="${up ? "new-password" : "current-password"}" placeholder="${up ? "Password (at least 8 characters)" : "Password"}" minlength="${up ? 8 : 1}" required>
+      ${up ? '<input id="pw2" type="password" autocomplete="new-password" placeholder="Password again" required>' : ""}
+      <div class="err" id="er">${msg ? esc(msg) : ""}</div><button class="btn" type="submit">${up ? "Create account" : "Sign in"}</button></form>
+      <p class="small muted center" style="margin-top:18px">${up ? "New accounts can view the readings and alerts. Only the owner can change power save." : "Use the email and password of your AmperEC account."}</p></div>`;
+    app.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { loginMode = b.dataset.mode; showLogin(); }));
     document.getElementById("lf").addEventListener("submit", async (e) => {
       e.preventDefault();
-      document.getElementById("er").textContent = "Signing in…";
-      const { error } = await sb.auth.signInWithPassword({ email: document.getElementById("em").value.trim(), password: document.getElementById("pw").value });
-      if (error) { document.getElementById("er").textContent = "Wrong email or password."; return; }
+      const er = document.getElementById("er");
+      const email = document.getElementById("em").value.trim(), pw = document.getElementById("pw").value;
+      if (up) {
+        if (pw.length < 8) { er.textContent = "The password needs at least 8 characters."; return; }
+        if (pw !== document.getElementById("pw2").value) { er.textContent = "The two passwords are not the same."; return; }
+        er.textContent = "Creating your account…";
+        const { data: d, error } = await sb.auth.signUp({ email, password: pw });
+        if (error) { er.textContent = /registered|exists/i.test(error.message) ? "This email already has an account. Sign in instead." : error.message; return; }
+        if (!d.session) { loginMode = "signin"; showLogin("Account created. Check your email to confirm it, then sign in."); return; }
+        start();
+        return;
+      }
+      er.textContent = "Signing in…";
+      const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+      if (error) { er.textContent = /confirm/i.test(error.message) ? "Confirm your email first (check your inbox)." : "Wrong email or password."; return; }
       start();
     });
   }
 
   async function start() {
-    await refresh();
+    app.innerHTML = '<div class="login"><div class="center muted">Loading…</div></div>';
+    isAdmin = DEMO && !new URLSearchParams(location.search).has("viewer"); // ?demo&viewer shows the view-only screens
+    if (!DEMO) {
+      try { const { data: a } = await sb.rpc("is_app_admin"); isAdmin = a === true; } catch (e) { isAdmin = false; }
+    }
+    await load();
+    render();
     clearInterval(timer);
     timer = setInterval(() => { if (!document.hidden) refresh(); }, 5000);
   }

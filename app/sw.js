@@ -1,5 +1,5 @@
 // AmperEC service worker: keeps the app's own files so it opens fast; live data always comes from the network.
-const CACHE = "amperec-v1";
+const CACHE = "amperec-v2";
 const FILES = ["./", "index.html", "style.css", "app.js", "config.js", "manifest.webmanifest",
                "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 

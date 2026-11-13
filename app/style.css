@@ -74,6 +74,9 @@ button, input { font: inherit; color: inherit; }
          padding: calc(var(--safe-top) + 24px) 24px calc(var(--safe-bottom) + 24px); }
 .login input { width: 100%; padding: 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 12px; font-size: 16px; }
 .login input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.seg { display: flex; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px; margin-bottom: 14px; }
+.seg button { flex: 1; border: 0; background: none; padding: 10px; border-radius: 10px; color: var(--ink2); font-weight: 500; cursor: pointer; }
+.seg button.sel { background: var(--panel2); color: var(--ink); }
 .err { color: var(--danger); font-size: 14px; min-height: 20px; margin-bottom: 8px; }
 .demo { position: fixed; top: calc(var(--safe-top) + 6px); right: 10px; font-size: 11px; background: var(--accent2); color: var(--on);
         padding: 2px 8px; border-radius: 99px; z-index: 6; font-weight: 600; }
