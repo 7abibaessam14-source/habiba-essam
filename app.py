@@ -47,6 +47,7 @@ import meter_assistant
 from ml_models import (FEATURES, add_features, detect_anomalies, feature_importance, forecast_next, to_hourly,
                        train_and_compare)
 import notify
+import powersave
 import sensor
 import startup_cache
 import store
@@ -993,6 +994,80 @@ def render_sensor():
                 hide_index=True, width="stretch")
 
     sensor_panel()
+    render_power_save()
+
+
+def render_power_save():
+    """Power save mode (like a phone's): settings saved in Supabase, read by the ESP32, which warns then switches lamp 2 off."""
+    device = powersave.DEFAULT_DEVICE
+    st.divider()
+    st.subheader("Power save mode", anchor=False)
+    st.caption("Like a phone's power save mode: when the current stays high for too long (for example two lamps left on), "
+               "the ESP32 warns, waits so you can cancel, then switches lamp 2 off.")
+    settings, err = powersave.load_settings(device)
+    if err:
+        st.warning(err)
+        return
+
+    can_edit = auth.is_admin() or not auth.login_enabled()
+    with st.form("power_save_form", border=True):
+        enabled = st.toggle("Power save mode on", value=bool(settings["enabled"]), disabled=not can_edit)
+        c1, c2 = st.columns(2)
+        limit_a = c1.number_input("Switch off when current is above (A)", 0.1, 30.0, float(settings["limit_a"]), 0.1,
+                                  disabled=not can_edit, help="One 12 V 21 W lamp is about 1.75 A, two are about 3.5 A.")
+        after_min = c2.number_input("for more than (minutes)", 0.5, 1440.0, float(settings["after_min"]), 0.5,
+                                    disabled=not can_edit)
+        c3, c4 = st.columns(2)
+        warn_s = c3.number_input("Warning before switching off (seconds)", 10, 600, int(settings["warn_s"]), 10,
+                                 disabled=not can_edit)
+        lamp_w = c4.number_input("Power of lamp 2 (W)", 1.0, 5000.0, float(settings["lamp_w"]), 1.0,
+                                 disabled=not can_edit, help="Used to work out the energy saved.")
+        if st.form_submit_button("Save", icon=":material/save:", type="primary", disabled=not can_edit):
+            ok, msg = powersave.save_settings(device, enabled, limit_a, after_min, warn_s, lamp_w)
+            (st.success if ok else st.error)(msg + (" The ESP32 picks it up within about 10 seconds." if ok else ""))
+            settings = {**settings, "enabled": enabled, "limit_a": limit_a, "after_min": after_min, "warn_s": warn_s,
+                        "lamp_w": lamp_w} if ok else settings
+    if not can_edit:
+        st.caption("Only an admin can change these settings.")
+
+    @st.fragment(run_every=5)
+    def power_save_status():
+        events, err = powersave.load_events(device, 24)
+        if err:
+            st.warning(err)
+            return
+        s = powersave.status(events, settings)
+        if s["state"] == "off":
+            st.info("Power save mode is off.", icon=":material/battery_full:")
+        elif s["state"] == "watching":
+            st.success(f"Watching: lamp 2 switches off if the current stays above {settings['limit_a']:g} A "
+                       f"for {settings['after_min']:g} min.", icon=":material/battery_saver:")
+        elif s["state"] == "warning":
+            st.error(f"Lamp 2 will switch off in {s['seconds_left']} s.", icon="⏳")
+            if st.button("Cancel", icon=":material/close:", disabled=not can_edit):
+                ok, msg = powersave.cancel(device, settings["after_min"])
+                st.toast("Cancelled." if ok else msg, icon="✅" if ok else "⚠️")
+        elif s["state"] == "turned_off":
+            since = s["since"].tz_convert("Africa/Cairo")
+            st.warning(f"Lamp 2 was switched off by power save at {since:%H:%M}.", icon=":material/power_off:")
+            if st.button("Turn lamp 2 back on", icon=":material/power:", disabled=not can_edit):
+                ok, msg = powersave.restore(device)
+                st.toast("The ESP32 switches it on within about 10 seconds." if ok else msg, icon="✅" if ok else "⚠️")
+
+        m1, m2 = st.columns(2)
+        m1.metric("Energy saved (last 24 h)", f"{powersave.saved_wh(events, settings['lamp_w']):.1f} Wh",
+                  help="How long lamp 2 was really switched off x its power.")
+        m2.metric("Times switched off (last 24 h)", int((events["event"] == "turned_off").sum()))
+        if len(events):
+            with st.expander("Power save log"):
+                log = events.sort_values("created_at", ascending=False).head(50)
+                st.dataframe(pd.DataFrame({
+                    "time": log["created_at"].dt.tz_convert("Africa/Cairo").dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "what happened": log["event"].map(powersave.EVENT_TEXT).fillna(log["event"]),
+                    "current (A)": log["current_a"].round(2),
+                }), hide_index=True, width="stretch")
+
+    power_save_status()
 
 
 def render_monitor():
