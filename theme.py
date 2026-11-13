@@ -11,12 +11,14 @@ from urllib.parse import quote
 import streamlit as st
 
 MODES = ["Dark", "Light"]
-COLORS = ["Red", "Teal", "Lime", "Gold", "Violet"]
-SWATCH = {"Red": "#FF5362", "Teal": "#3FE0D0", "Lime": "#D4FF3A", "Gold": "#FFC845", "Violet": "#BDA4FF"}
+COLORS = ["Red", "Teal", "Blue", "Lime", "Gold", "Violet"]
+SWATCH = {"Red": "#FF5362", "Teal": "#3FE0D0", "Blue": "#4DA3FF", "Lime": "#D4FF3A", "Gold": "#FFC845", "Violet": "#BDA4FF"}
 # Light mode needs darker accents so that text in that color stays readable on the light background
-LIGHT_ACCENT = {"Red": "#C81E33", "Teal": "#0A706A", "Lime": "#4A7300", "Gold": "#935C00", "Violet": "#5B37D6"}
-GLOW = {"Red": "#FF2D3F", "Teal": "#12BFB0", "Lime": "#7EDB1F", "Gold": "#FF9A1F", "Violet": "#7A3BFF"}
-DEEP = {"Red": "#7A0F2A", "Teal": "#0B4F6C", "Lime": "#0F5E36", "Gold": "#6E3A08", "Violet": "#2A1B7A"}
+LIGHT_ACCENT = {"Red": "#C81E33", "Teal": "#0A706A", "Blue": "#1F5FBF", "Lime": "#4A7300", "Gold": "#935C00", "Violet": "#5B37D6"}
+GLOW = {"Red": "#FF2D3F", "Teal": "#12BFB0", "Blue": "#1E7BFF", "Lime": "#7EDB1F", "Gold": "#FF9A1F", "Violet": "#7A3BFF"}
+DEEP = {"Red": "#7A0F2A", "Teal": "#0B4F6C", "Blue": "#0B2E6E", "Lime": "#0F5E36", "Gold": "#6E3A08", "Violet": "#2A1B7A"}
+# second color of the AmperEC logo (the logo is a gradient from SWATCH to PARTNER); same pairs as the phone app
+PARTNER = {"Red": "#FF9AA4", "Teal": "#7CF29B", "Blue": "#7CE7FF", "Lime": "#7EDB1F", "Gold": "#FF9A1F", "Violet": "#7AC8FF"}
 
 DARK = {"ground": "#060405", "ink": "#F7F5F3", "ink2": "#DDD6D2", "on": "#0A0506", "panel": "#120D0FB8", "well": "#FFFFFF12",
         "chip": "#FFFFFF14", "line": "#FFFFFF2E", "wall": "#0D090A", "orb": "0.42", "orb2": "0.75", "chart": "none"}
@@ -217,27 +219,35 @@ CHARTS = _svg(
 SCENES = {"bill": BILLS, "assistant": WIRES, "reports": ENVELOPES}
 
 
-def _h_mark(color):
-    """The logo: an H, its white bars with circuit lines, joined by a curved wire. The tile stays dark in both modes."""
-    c = SWATCH[color]
-    return (f'<rect width="512" height="512" rx="112" fill="#0E1726"/>'
-            f'<rect x="92" y="96" width="72" height="320" rx="20" fill="#F7F5F3"/><rect x="348" y="96" width="72" height="320" rx="20" fill="#F7F5F3"/>'
-            f'<path d="M128 130 V206 M128 306 V382 M384 130 V206 M384 306 V382" stroke="#0E1726" stroke-width="12" stroke-linecap="round"/>'
-            f'<circle cx="128" cy="130" r="13" fill="{c}"/><circle cx="128" cy="382" r="13" fill="{c}"/>'
-            f'<circle cx="384" cy="130" r="13" fill="{c}"/><circle cx="384" cy="382" r="13" fill="{c}"/>'
-            f'<path d="M164 256 C200 180 226 180 256 256 S312 332 348 256" fill="none" stroke="{c}" stroke-width="28" stroke-linecap="round"/>'
-            f'<circle cx="164" cy="256" r="24" fill="{c}"/><circle cx="348" cy="256" r="24" fill="{c}"/>')
+def _aec_mark(color):
+    """The AmperEC logo on a dark tile: an A with a lightning bolt, a circuit E and a C with a leaf (same drawing as the
+    phone app), in a gradient from the picked color to its partner color. The tile stays dark in both modes."""
+    a, b, gid = SWATCH[color], PARTNER[color], f"aec{color}"
+    return (f'<defs><linearGradient id="{gid}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="{a}"/>'
+            f'<stop offset="1" stop-color="{b}"/></linearGradient></defs>'
+            f'<rect width="512" height="512" rx="112" fill="#0A0E1A"/>'
+            f'<g transform="translate(46 150) scale(1.5)">'
+            f'<g fill="none" stroke="url(#{gid})" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">'
+            f'<path d="M30 136 L72 16 L114 136"/><path d="M58 62 L38 98 H62 L44 138" stroke-width="7"/>'
+            f'<path d="M96 92 C112 92 116 68 132 68"/><path d="M178 22 H132 V128 H178 M132 75 H166"/>'
+            f'<path d="M262 44 A50 50 0 1 0 262 106"/></g>'
+            f'<g fill="url(#{gid})"><circle cx="178" cy="22" r="7"/><circle cx="178" cy="128" r="7"/><circle cx="166" cy="75" r="6"/>'
+            f'<circle cx="262" cy="44" r="7"/><circle cx="262" cy="106" r="7"/>'
+            f'<path d="M218 98 C200 84 206 58 236 54 C240 80 230 96 218 98 Z"/>'
+            f'<circle cx="252" cy="62" r="3"/><circle cx="256" cy="74" r="3"/><circle cx="255" cy="86" r="3"/></g>'
+            f'<path d="M218 98 L230 66" stroke="#0A0E1A" stroke-width="3" stroke-linecap="round"/></g>')
 
 
 def icon_svg(color="Red"):
-    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">{_h_mark(color)}</svg>'
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">{_aec_mark(color)}</svg>'
 
 
 def logo_svg(mode="Dark", color="Red"):
     ink = (LIGHT if mode == "Light" else DARK)["ink"]
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" width="200" height="40">'
-            f'<svg x="1" y="1" width="38" height="38" viewBox="0 0 512 512">{_h_mark(color)}</svg>'
-            f'<text x="46" y="27" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="{ink}">Smart Energy</text></svg>')
+            f'<svg x="1" y="1" width="38" height="38" viewBox="0 0 512 512">{_aec_mark(color)}</svg>'
+            f'<text x="47" y="27" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="1.5">'
+            f'<tspan fill="{ink}">AMPER</tspan><tspan fill="{accent(mode, color)}">EC</tspan></text></svg>')
 
 
 def accent(mode, color):

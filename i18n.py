@@ -86,6 +86,7 @@ AR = {
     "Light": "فاتح",
     "Red": "أحمر",
     "Teal": "تركواز",
+    "Blue": "أزرق",
     "Lime": "ليموني",
     "Gold": "ذهبي",
     "Violet": "بنفسجي",
@@ -137,6 +138,7 @@ AR = {
 
     # ---- login page (auth.py)
     "Smart-meter electricity pipeline - graduation project": "منصة لتحليل استهلاك الكهرباء من العدادات الذكية - مشروع تخرج",
+    "Smart electrical consumption - graduation project": "استهلاك كهرباء ذكي - مشروع تخرج",
     "Sign in with Google": "الدخول بحساب Google",
     "Anyone with a Google account can sign in.": "يمكن لأي شخص لديه حساب Google الدخول.",
     "**or** use a username and password": "**أو** استخدم اسم مستخدم وكلمة مرور",

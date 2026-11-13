@@ -37,6 +37,7 @@
   let draft = null; // power save settings being edited
   let isAdmin = false; // only the owner (table app_admins) may change power save; new accounts only view
   let loginMode = "signin";
+  let pushOn = false; // this phone has notifications turned on
 
   // ---------- small helpers ----------
   function store(k, v) {
@@ -236,6 +237,7 @@
     const ps = powerState();
     let html = `<div class="head"><h1>Alerts</h1></div>`;
     if (ps.state === "warning") html += warningCard(ps);
+    html += notifyCard();
     if (ps.state === "turned_off") {
       html += `<div class="card alertcard"><div class="t">Lamp 2 is off (power save, ${fmtTime(ps.since)})</div>${restoreButton()}</div>`;
     }
@@ -286,6 +288,53 @@
       ${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     return html;
   }
+  // ---------- phone notifications ----------
+  function pushSupport() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      const ios = /iPhone|iPad/.test(navigator.userAgent);
+      return ios && !navigator.standalone ? "add" : "no";
+    }
+    return "yes";
+  }
+  function notifyCard() {
+    if (DEMO) return "";
+    const sup = pushSupport();
+    let body;
+    if (sup === "add") body = '<div class="lbl">On iPhone, notifications work only from the app on your home screen: Safari → Share → Add to Home Screen, then open AmperEC from there (iOS 16.4 or newer).</div>';
+    else if (sup === "no") body = '<div class="lbl">This browser cannot show notifications.</div>';
+    else if (Notification.permission === "denied") body = '<div class="lbl">Notifications are blocked. Allow them in your phone settings for AmperEC.</div>';
+    else body = `<div class="row"><div><div>${pushOn ? "Notifications are on" : "Get alerts on this phone"}</div>
+        <div class="lbl">Current above the limit and power save warnings</div></div>
+        <button class="switch ${pushOn ? "on" : ""}" data-act="push" aria-label="Notifications" aria-pressed="${pushOn}"></button></div>`;
+    return `<div class="card"><div class="lbl" style="margin-bottom:8px">Notifications</div>${body}</div>`;
+  }
+  function b64ToBytes(s) {
+    const pad = "=".repeat((4 - (s.length % 4)) % 4);
+    const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+  async function checkPush() {
+    pushOn = false;
+    if (DEMO || pushSupport() !== "yes" || Notification.permission !== "granted") return;
+    try { const reg = await navigator.serviceWorker.ready; pushOn = !!(await reg.pushManager.getSubscription()); } catch (e) { pushOn = false; }
+  }
+  async function togglePush() {
+    const reg = await navigator.serviceWorker.ready;
+    if (pushOn) {
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) { await sb.from("push_subscriptions").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
+      pushOn = false;
+      return "Notifications turned off on this phone.";
+    }
+    if ((await Notification.requestPermission()) !== "granted") return "Notifications were not allowed.";
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(CFG.vapidPublicKey) });
+    const j = sub.toJSON();
+    const { error } = await sb.from("push_subscriptions").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }, { onConflict: "endpoint" });
+    if (error) { await sub.unsubscribe(); return "Could not save: " + error.message; }
+    pushOn = true;
+    return "Notifications are on.";
+  }
+
   function colorCard() {
     return `<div class="card"><div class="lbl" style="margin-bottom:10px">App color</div><div class="swatches">
       ${Object.keys(COLORS).map((n) => `<button class="swatch ${n === colorName() ? "sel" : ""}" data-color="${n}" aria-label="${n}" style="background:${COLORS[n][0]}"></button>`).join("")}
@@ -338,6 +387,10 @@
       toast(err ? "Failed: " + err : "Lamp 2 switches on within about 10 seconds.");
       if (!DEMO) await refresh();
     }
+    if (act === "push") {
+      try { toast(await togglePush()); } catch (e) { toast("Notifications failed: " + (e.message || e)); }
+      render();
+    }
     if (act === "logout") { await sb.auth.signOut(); showLogin(); }
   });
 
@@ -382,7 +435,8 @@
     if (!DEMO) {
       try { const { data: a } = await sb.rpc("is_app_admin"); isAdmin = a === true; } catch (e) { isAdmin = false; }
     }
-    await load();
+    await Promise.all([load(), checkPush()]);
+    if (new URLSearchParams(location.search).get("tab") === "alerts") tab = "alerts"; // opened from a notification
     render();
     clearInterval(timer);
     timer = setInterval(() => { if (!document.hidden) refresh(); }, 5000);

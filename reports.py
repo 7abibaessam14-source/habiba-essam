@@ -205,7 +205,7 @@ def as_sms(r):
     if r["lang"] == "ar":
         return (f"تقرير الطاقة {AR_FREQ[r['frequency']]}. {period_label(r)}: {r['period_kwh']:.0f} ك.و.س ~{r['period_egp']:.0f} "
                 f"جنيه{_change(r)}. الغد: {_tomorrow_line(r)}. الشهر: {_budget_line(r)}." + (f" نصيحة: {tip}" if tip else ""))
-    text = (f"Smart Energy {r['frequency'].lower()} report. {period_label(r)}: {r['period_kwh']:.0f} kWh "
+    text = (f"AmperEC {r['frequency'].lower()} report. {period_label(r)}: {r['period_kwh']:.0f} kWh "
             f"~{r['period_egp']:.0f} EGP{_change(r)}. Tomorrow: {_tomorrow_line(r)}. Month: {_budget_line(r)}."
             + (f" Tip: {tip}" if tip else ""))
     return text.replace("–", "-")  # plain characters: one non-English character makes every SMS part shorter
@@ -224,7 +224,7 @@ def as_whatsapp(r):
     budget_icon = " ⚠️" if r["budget"] and p["projected_egp"] > r["budget"] else ""
     if ar:
         lines = [
-            f"⚡ *Smart Energy – التقرير {AR_FREQ[r['frequency']]}* ({day_month(r['today'], 'ar')} {r['today'].year})",
+            f"⚡ *AmperEC – التقرير {AR_FREQ[r['frequency']]}* ({day_month(r['today'], 'ar')} {r['today'].year})",
             f"{period_label(r)}: *{r['period_kwh']:.1f} ك.و.س* ≈ {r['period_egp']:,.0f} جنيه{_change(r)}",
             f"{arrow} الغد: {_tomorrow_line(r)}",
             f"🧾 {month_name(p['month'], 'ar')}: {p['used_egp']:,.0f} جنيه حتى الآن، {_budget_line(r)}{budget_icon}",
@@ -233,7 +233,7 @@ def as_whatsapp(r):
         tips_title = "💡 *نصائح:*"
     else:
         lines = [
-            f"⚡ *Smart Energy – {r['frequency']} report* ({r['today']:%d %b %Y})",
+            f"⚡ *AmperEC – {r['frequency']} report* ({r['today']:%d %b %Y})",
             f"{period_label(r)}: *{r['period_kwh']:.1f} kWh* ≈ {r['period_egp']:,.0f} EGP{_change(r)}",
             f"{arrow} Tomorrow: {_tomorrow_line(r)}",
             f"🧾 {p['month']:%B}: {p['used_egp']:,.0f} EGP so far, {_budget_line(r)}{budget_icon}",
@@ -252,9 +252,9 @@ def as_email(r):
     p, ar = r["proj"], r["lang"] == "ar"
     if ar:
         tomorrow_word = {"higher": "أعلى من اليوم", "lower": "أقل من اليوم"}.get(r["trend"], "تقريبًا مثل اليوم")
-        title = f"Smart Energy – التقرير {AR_FREQ[r['frequency']]}"
+        title = f"AmperEC – التقرير {AR_FREQ[r['frequency']]}"
         date = f"{weekday(r['today'], 'ar')} {day_month(r['today'], 'ar')} {r['today'].year}"
-        subject = f"تقرير Smart Energy {AR_FREQ[r['frequency']]} – {day_month(r['today'], 'ar')} {r['today'].year}: الغد {tomorrow_word}"
+        subject = f"تقرير AmperEC {AR_FREQ[r['frequency']]} – {day_month(r['today'], 'ar')} {r['today'].year}: الغد {tomorrow_word}"
         month = month_name(p["month"], "ar")
         rows = [
             (period_label(r), f"{r['period_kwh']:.1f} ك.و.س ≈ {r['period_egp']:,.0f} جنيه{_change(r)}"),
@@ -267,9 +267,9 @@ def as_email(r):
         tips_title, direction, align = "💡 نصائح", "rtl", "right"
     else:
         tomorrow_word = {"higher": "higher than today", "lower": "lower than today"}.get(r["trend"], "about the same as today")
-        title = f"Smart Energy – {r['frequency']} report"
+        title = f"AmperEC – {r['frequency']} report"
         date = f"{r['today']:%A %d %B %Y}"
-        subject = f"Smart Energy {r['frequency'].lower()} report – {r['today']:%d %b %Y}: tomorrow {tomorrow_word}"
+        subject = f"AmperEC {r['frequency'].lower()} report – {r['today']:%d %b %Y}: tomorrow {tomorrow_word}"
         rows = [
             (period_label(r), f"{r['period_kwh']:.1f} kWh ≈ {r['period_egp']:,.0f} EGP{_change(r)}"),
             ("Today (expected total)", f"{r['today_kwh']:.1f} kWh ≈ {r['today_egp']:,.0f} EGP"),

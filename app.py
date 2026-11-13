@@ -56,7 +56,7 @@ from i18n import RTL_CSS, TRANSLATED_PAGES, T, day_month, is_ar, language_switch
 from reports import (CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, note, now_local, sms_parts,
                      today_series)
 
-APP_NAME = "Smart Energy Monitor"
+APP_NAME = "AmperEC"
 st.set_page_config(page_title=APP_NAME, page_icon=str(Path(__file__).parent / "assets" / "icon.svg"), layout="wide")
 st.session_state.setdefault("lang", "en")  # English / Arabic (i18n.py), chosen on the login page or in the sidebar
 st.session_state["lang"] = st.session_state["lang"]
@@ -316,7 +316,7 @@ if auth.current_user() is None:
         theme.apply("home", st.session_state.theme_mode, st.session_state.theme_color, rtl=is_ar())
         if is_ar():
             st.markdown(RTL_CSS, unsafe_allow_html=True)
-        auth.login_page(APP_NAME, "Smart-meter electricity pipeline - graduation project",
+        auth.login_page(APP_NAME, "Smart electrical consumption - graduation project",
                         logo=theme.icon_svg(st.session_state.theme_color))
 
     st.navigation(

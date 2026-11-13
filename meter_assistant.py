@@ -65,7 +65,7 @@ SAFE_REPLY = {
     "ar": "لسه معنديش إجابة أكيدة للموضوع ده. قولي عندك تكييف أو سخان كهربا، وكام واحد عايش في البيت، وأنا أقولك تبدأ بإيه.",
 }
 
-CHAT_SYSTEM = """You are the energy assistant of Smart Energy Monitor, a graduation project for homes in Egypt. You help
+CHAT_SYSTEM = """You are the energy assistant of AmperEC (smart electrical consumption), a graduation project for homes in Egypt. You help
 one user understand their electricity use and lower it.
 
 Reply only in {language}, whatever language earlier messages use. Keep replies short and practical, like a helpful
