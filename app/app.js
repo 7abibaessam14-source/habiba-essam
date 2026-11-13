@@ -119,6 +119,7 @@
   }
 
   async function load() {
+    await loadWeather();
     if (DEMO) { data = demoData(); return; }
     const since = (h) => new Date(Date.now() - h * 3600000).toISOString();
     try {
@@ -216,7 +217,7 @@
     if (data.error) html += `<div class="card alertcard"><div class="t">${esc(data.error)}</div></div>`;
     if (ps.state === "warning") html += warningCard(ps);
     if (!last) {
-      return html + `<div class="card empty">No readings in the last hour.<br>Turn on the ESP32: it sends one reading every 5 seconds.</div>`;
+      return html + `<div class="card empty">No readings in the last hour.<br>Turn on the ESP32: it sends one reading every 5 seconds.</div>` + weatherCard();
     }
     const age = (Date.now() - new Date(last.created_at).getTime()) / 1000;
     const online = age <= OFFLINE_AFTER_S;
@@ -229,7 +230,8 @@
       <div class="lbl">about ${(last.current_a * VOLTS).toFixed(1)} W at ${VOLTS} V</div></div>
       <div class="card"><div class="lbl" style="margin-bottom:8px">Last hour</div>${chart(r)}</div>
       <div class="grid2"><div class="card"><div class="lbl">Peak</div><div class="mid">${peak.toFixed(2)} A</div></div>
-      <div class="card"><div class="lbl">Readings above limit</div><div class="mid">${alerts}</div></div></div>`;
+      <div class="card"><div class="lbl">Readings above limit</div><div class="mid">${alerts}</div></div></div>
+      <div style="height:12px"></div>${weatherCard()}`;
     return html;
   }
 
@@ -273,7 +275,7 @@
         <p class="small muted center" style="margin:0 0 12px">Only the owner can change power save.</p>
         <div class="grid2" style="margin-bottom:12px"><div class="card"><div class="lbl">Saved (24 h)</div><div class="mid" style="color:var(--accent)">${savedWh().toFixed(1)} Wh</div></div>
         <div class="card"><div class="lbl">Times off (24 h)</div><div class="mid">${times}</div></div></div>
-        ${colorCard()}${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
+        ${colorCard()}${cityCard()}${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     }
     html += `<div class="card"><div class="field"><span>Power save mode</span>
         <button class="switch ${draft.enabled ? "on" : ""}" data-act="toggle" aria-label="Power save mode" aria-pressed="${!!draft.enabled}"></button></div>
@@ -284,10 +286,79 @@
       <button class="btn" data-act="save" style="margin-bottom:12px">Save</button>
       <div class="grid2" style="margin-bottom:12px"><div class="card"><div class="lbl">Saved (24 h)</div><div class="mid" style="color:var(--accent)">${savedWh().toFixed(1)} Wh</div></div>
       <div class="card"><div class="lbl">Times off (24 h)</div><div class="mid">${times}</div></div></div>
-      ${colorCard()}
+      ${colorCard()}${cityCard()}
       ${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     return html;
   }
+  // ---------- tomorrow's weather (Open-Meteo, free, no key) - same rules as weather.py on the website ----------
+  const CITIES = {
+    "Cairo": [30.0444, 31.2357], "Giza": [30.0131, 31.2089], "Alexandria": [31.2001, 29.9187], "Port Said": [31.2653, 32.3019],
+    "Ismailia": [30.5965, 32.2715], "Suez": [29.9668, 32.5498], "Mansoura": [31.0409, 31.3785], "Tanta": [30.7865, 31.0004],
+    "Zagazig": [30.5877, 31.5020], "Asyut": [27.1809, 31.1837], "Luxor": [25.6872, 32.6396], "Aswan": [24.0889, 32.8998],
+    "Hurghada": [27.2579, 33.8116], "Sharm El Sheikh": [27.9158, 34.3299],
+  };
+  const SKY = [[[0], "☀️", "clear sky"], [[1, 2], "🌤️", "partly cloudy"], [[3], "☁️", "cloudy"], [[45, 48], "☁️", "fog"],
+    [[51, 53, 55, 56, 57], "🌦️", "drizzle"], [[61, 63, 65, 66, 67, 80, 81, 82], "🌧️", "rain"], [[71, 73, 75, 77, 85, 86], "❄️", "snow"],
+    [[95, 96, 99], "⛈️", "thunderstorm"]];
+  let wx = null, wxKey = "", wxTried = 0;
+  function cityName() { const c = store("amperec_city"); return CITIES[c] ? c : "Cairo"; }
+  function cairoDate(offsetDays) {
+    return new Date(Date.now() + offsetDays * 86400000).toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+  }
+  async function loadWeather(force) {
+    const city = cityName(), key = city + cairoDate(0);
+    if (DEMO) { wx = { city, tmax: 38, tmin: 26, rain: 5, code: 0 }; return; }
+    if (!force && key === wxKey && (wx || Date.now() - wxTried < 600000)) return; // once per day and city; retry after 10 min
+    wxKey = key; wxTried = Date.now();
+    try {
+      const [lat, lon] = CITIES[city];
+      const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&timezone=Africa%2FCairo&forecast_days=3` +
+        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code");
+      const d = (await r.json()).daily, i = d.time.indexOf(cairoDate(1));
+      wx = i < 0 ? null : { city, tmax: d.temperature_2m_max[i], tmin: d.temperature_2m_min[i],
+                            rain: d.precipitation_probability_max ? d.precipitation_probability_max[i] : null, code: d.weather_code[i] };
+    } catch (e) { wx = null; }
+  }
+  function wxBand(w) {
+    if (w.tmax >= 35) return "very_hot";
+    if (w.tmax >= 30) return "hot";
+    if (w.tmin < 10) return "cold";
+    if (w.tmax < 22) return "cool";
+    return "mild";
+  }
+  function wxTips(w) {
+    const hi = Math.round(w.tmax) + "°C", lo = Math.round(w.tmin) + "°C";
+    const t = {
+      very_hot: [`Very hot tomorrow (${hi}): set the AC to 24-25°C, not 18. Every degree warmer uses less electricity.`,
+                 "Close the curtains on sunny windows in the afternoon to keep the heat out.",
+                 "Run the washing machine, iron and water heater early in the morning or at night, not at midday."],
+      hot: [`Warm tomorrow (${hi}): try the fan first; if you need the AC, keep it at 25°C with doors and windows closed.`,
+            "Switch the AC off in empty rooms."],
+      mild: [`Pleasant weather tomorrow (${hi}): open the windows and give the AC a day off.`,
+             "Dry clothes in the sun and use daylight instead of lamps."],
+      cool: [`Cool tomorrow (${lo} to ${hi}): no AC needed.`,
+             "Turn the water heater on only about an hour before you need hot water, not all day."],
+      cold: [`Cold night tomorrow (${lo}): use a blanket instead of running a heater all night.`,
+             "If you use a heater, heat one room and keep its door closed.",
+             "Turn the water heater on only about an hour before you need hot water."],
+    }[wxBand(w)].slice();
+    if (w.rain >= 50) t.push("Rain is likely: unplug any devices that are outdoors.");
+    return t.slice(0, 3);
+  }
+  function weatherCard() {
+    if (!wx) return "";
+    const s = SKY.find((x) => x[0].includes(wx.code)) || [[], "🌡️", ""];
+    return `<div class="card"><div class="row"><span class="lbl">Tomorrow in ${esc(wx.city)}</span><span class="pill">${s[1]} ${s[2]}</span></div>
+      <div class="mid" style="margin:4px 0 8px">${Math.round(wx.tmax)}° <span class="muted" style="font-size:16px">/ ${Math.round(wx.tmin)}°C</span>
+      ${wx.rain >= 30 ? `<span class="small muted">· ${wx.rain}% rain</span>` : ""}</div>
+      ${wxTips(wx).map((t) => `<div class="small" style="margin:6px 0;display:flex;gap:8px"><span>💡</span><span>${esc(t)}</span></div>`).join("")}</div>`;
+  }
+  function cityCard() {
+    return `<div class="card"><div class="field"><span class="lbl">City for the weather tips</span>
+      <select id="citysel" style="background:var(--panel2);border:0;border-radius:10px;padding:8px 10px;font-size:15px">
+      ${Object.keys(CITIES).map((c) => `<option ${c === cityName() ? "selected" : ""}>${c}</option>`).join("")}</select></div></div>`;
+  }
+
   // ---------- phone notifications ----------
   function pushSupport() {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
@@ -353,6 +424,7 @@
   async function refresh() {
     await load();
     if (document.querySelector(".login")) return; // signed out meanwhile
+    if (document.activeElement && document.activeElement.id === "citysel") return; // do not close the city list while it is open
     render();
   }
 
@@ -392,6 +464,14 @@
       render();
     }
     if (act === "logout") { await sb.auth.signOut(); showLogin(); }
+  });
+
+  app.addEventListener("change", async (ev) => {
+    if (ev.target.id !== "citysel") return;
+    store("amperec_city", ev.target.value);
+    await loadWeather(true);
+    render();
+    toast(wx ? `Weather tips for ${wx.city}.` : "Could not get the weather right now.");
   });
 
   // ---------- sign in ----------

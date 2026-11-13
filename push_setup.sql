@@ -32,6 +32,12 @@ drop policy if exists "app reads alert events" on public.alert_events;
 create policy "app reads alert events" on public.alert_events for select to authenticated using (true);
 grant select on table public.alert_events to authenticated;
 
+-- the evening weather notification (send_reports.py adds one 'weather' row a day with its title and text)
+alter table public.alert_events add column if not exists title text;
+alter table public.alert_events add column if not exists body text;
+alter table public.alert_events drop constraint if exists alert_events_event_check;
+alter table public.alert_events add constraint alert_events_event_check check (event in ('over_limit', 'weather'));
+
 -- a reading above the limit right after one that was not (or after a gap of more than 1 minute) = a new alert
 create or replace function public.note_over_limit() returns trigger
     language plpgsql security definer set search_path = public as

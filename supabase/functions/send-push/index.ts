@@ -12,6 +12,7 @@ const TEXT: Record<string, (r: any) => { title: string; body: string } | null> =
   would_turn_off: () => ({ title: "Power save (test)", body: "Lamp 2 would switch off now (no relay connected yet)." }),
   restored: () => ({ title: "Lamp 2 is back on", body: "Power save turned it on again." }),
   cancelled: () => null, // no notification
+  weather: (r) => (r.title && r.body ? { title: String(r.title).slice(0, 80), body: String(r.body).slice(0, 200) } : null),
 };
 
 function num(x: unknown) {

@@ -17,6 +17,7 @@ from billing import bill_egp, co2_kg, daily_kwh, month_projection, saving_tips
 from i18n import day_month, month_name, weekday
 from ml_models import forecast_next
 from uci_loader import APPLIANCE_COLUMNS
+import weather as wx
 
 TIMEZONE = "Africa/Cairo"
 FREQUENCIES = ("Daily", "Weekly", "Monthly")
@@ -78,9 +79,10 @@ def appliance_kwh(fact, offset, start, end):
 
 
 def build_report(hourly, model, frequency="Daily", now=None, tiers=None, flat_price=None, budget_egp=None, fact=None,
-                 lang="en"):
+                 lang="en", weather=None):
     """All the numbers of one report. `fact` (optional) adds the appliance tip; budget_egp the budget line;
-    lang ("en" / "ar") is the language of the tips and of every text made from the result."""
+    lang ("en" / "ar") is the language of the tips and of every text made from the result;
+    weather (optional, from weather.fetch_tomorrow) adds tomorrow's weather and the tips that fit it."""
     now = (now if now is not None else now_local()).floor("h")
     today, tomorrow = now.normalize(), now.normalize() + DAY
 
@@ -136,6 +138,9 @@ def build_report(hourly, model, frequency="Daily", now=None, tiers=None, flat_pr
         "co2_month_kg": co2_kg(proj["projected_kwh"]),
         "budget": budget_egp,
         "tips": tips,
+        "weather": weather,
+        "weather_line": wx.summary(weather, lang) if weather else None,
+        "weather_tips": wx.tips(weather, lang) if weather else [],
         "forecast": fc,
         "years": (data.min().year, data.max().year),
     }
@@ -201,13 +206,18 @@ def _change(r):
 
 def as_sms(r):
     """Short text (about 2 SMS in English; Arabic SMS parts are shorter, 67 characters each)."""
-    tip = r["tips"][0][1] if r["tips"] else ""
+    w = r.get("weather")
+    # with the weather, its first tip replaces the bill tip (SMS is short)
+    tip = r["weather_tips"][0] if r.get("weather_tips") else (r["tips"][0][1] if r["tips"] else "")
     if r["lang"] == "ar":
+        wtxt = f" الطقس غدًا {w['tmax']:.0f} درجة." if w else ""
         return (f"تقرير الطاقة {AR_FREQ[r['frequency']]}. {period_label(r)}: {r['period_kwh']:.0f} ك.و.س ~{r['period_egp']:.0f} "
-                f"جنيه{_change(r)}. الغد: {_tomorrow_line(r)}. الشهر: {_budget_line(r)}." + (f" نصيحة: {tip}" if tip else ""))
+                f"جنيه{_change(r)}. الغد: {_tomorrow_line(r)}. الشهر: {_budget_line(r)}.{wtxt}" + (f" نصيحة: {tip}" if tip else ""))
+    wtxt = f" Weather tomorrow: {w['tmax']:.0f}C." if w else ""
     text = (f"AmperEC {r['frequency'].lower()} report. {period_label(r)}: {r['period_kwh']:.0f} kWh "
-            f"~{r['period_egp']:.0f} EGP{_change(r)}. Tomorrow: {_tomorrow_line(r)}. Month: {_budget_line(r)}."
+            f"~{r['period_egp']:.0f} EGP{_change(r)}. Tomorrow: {_tomorrow_line(r)}. Month: {_budget_line(r)}.{wtxt}"
             + (f" Tip: {tip}" if tip else ""))
+    text = text.replace("°C", "C").replace("°", "")
     return text.replace("–", "-")  # plain characters: one non-English character makes every SMS part shorter
 
 
@@ -240,6 +250,10 @@ def as_whatsapp(r):
             f"🌍 Carbon: about {r['co2_month_kg']:,.0f} kg CO₂ this month",
         ]
         tips_title = "💡 *Tips:*"
+    if r.get("weather_line"):
+        lines.append(f"{r['weather_line']}")
+        lines.append("🌤️ *نصائح حسب طقس الغد:*" if ar else "🌤️ *Tips for tomorrow's weather:*")
+        lines += [f"• {text}" for text in r["weather_tips"]]
     if r["tips"]:
         lines.append(tips_title)
         lines += [f"• {text}" for _, text in r["tips"]]
@@ -255,6 +269,8 @@ def as_email(r):
         title = f"AmperEC – التقرير {AR_FREQ[r['frequency']]}"
         date = f"{weekday(r['today'], 'ar')} {day_month(r['today'], 'ar')} {r['today'].year}"
         subject = f"تقرير AmperEC {AR_FREQ[r['frequency']]} – {day_month(r['today'], 'ar')} {r['today'].year}: الغد {tomorrow_word}"
+        if r.get("weather"):
+            subject += f"، {r['weather']['tmax']:.0f} درجة"
         month = month_name(p["month"], "ar")
         rows = [
             (period_label(r), f"{r['period_kwh']:.1f} ك.و.س ≈ {r['period_egp']:,.0f} جنيه{_change(r)}"),
@@ -265,11 +281,14 @@ def as_email(r):
             ("البصمة الكربونية", f"حوالي {r['co2_month_kg']:,.0f} كجم CO₂ هذا الشهر"),
         ]
         tips_title, direction, align = "💡 نصائح", "rtl", "right"
+        wtitle = "🌤️ نصائح حسب طقس الغد"
     else:
         tomorrow_word = {"higher": "higher than today", "lower": "lower than today"}.get(r["trend"], "about the same as today")
         title = f"AmperEC – {r['frequency']} report"
         date = f"{r['today']:%A %d %B %Y}"
         subject = f"AmperEC {r['frequency'].lower()} report – {r['today']:%d %b %Y}: tomorrow {tomorrow_word}"
+        if r.get("weather"):
+            subject += f", {r['weather']['tmax']:.0f}°C"
         rows = [
             (period_label(r), f"{r['period_kwh']:.1f} kWh ≈ {r['period_egp']:,.0f} EGP{_change(r)}"),
             ("Today (expected total)", f"{r['today_kwh']:.1f} kWh ≈ {r['today_egp']:,.0f} EGP"),
@@ -280,8 +299,11 @@ def as_email(r):
             ("Carbon footprint", f"about {r['co2_month_kg']:,.0f} kg CO₂ this month"),
         ]
         tips_title, direction, align = "💡 Tips", "ltr", "left"
+        wtitle = "🌤️ Tips for tomorrow's weather"
+    wtips = r.get("weather_tips") or []
     text = "\n".join([f"{title} ({date})", ""]
                      + [f"{k}: {v}" for k, v in rows]
+                     + ([""] + [r["weather_line"], wtitle] + [f"- {t}" for t in wtips] if wtips else [])
                      + ([""] + [tips_title] + [f"- {t}" for _, t in r["tips"]] if r["tips"] else [])
                      + ["", note(r)])
     e = html.escape
@@ -289,9 +311,16 @@ def as_email(r):
     table = "".join(f"<tr><td style='{cell};color:#555'>{e(k)}</td><td style='padding:4px 0'><b>{e(v)}</b></td></tr>"
                     for k, v in rows)
     tips = "".join(f"<li>{e(t)}</li>" for _, t in r["tips"])
+    weather_html = ""
+    if wtips:
+        items = "".join(f"<li>{e(t)}</li>" for t in wtips)
+        weather_html = (f"<div style='margin:16px 0 0;padding:10px 14px;background:#eef8f7;border-radius:10px'>"
+                        f"<p style='margin:0 0 6px'><b>{e(r['weather_line'])}</b></p>"
+                        f"<h3 style='margin:8px 0 4px'>{wtitle}</h3><ul style='margin:0'>{items}</ul></div>")
     body = (f"<div dir='{direction}' style='font-family:Arial,sans-serif;font-size:14px;color:#1b2430;text-align:{align}'>"
             f"<h2 style='color:#0e7c86;margin:0 0 8px'>⚡ {e(title)}</h2>"
             f"<p style='margin:0 0 12px;color:#555'>{e(date)}</p><table>{table}</table>"
+            + weather_html
             + (f"<h3 style='margin:16px 0 4px'>{tips_title}</h3><ul>{tips}</ul>" if tips else "")
             + f"<p style='color:#888;font-size:12px'>{e(note(r))}</p></div>")
     return subject, text, body

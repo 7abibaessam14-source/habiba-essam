@@ -28,6 +28,7 @@ Light / dark colours: .streamlit/config.toml. Needs the other .py files of this 
 
 import json
 import math
+from datetime import date
 from pathlib import Path
 
 import altair as alt
@@ -52,6 +53,7 @@ import sensor
 import startup_cache
 import store
 import theme
+import weather
 from i18n import RTL_CSS, TRANSLATED_PAGES, T, day_month, is_ar, language_switch, month_name, month_year
 from reports import (CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, note, now_local, sms_parts,
                      today_series)
@@ -464,17 +466,46 @@ if "rep_freq" not in st.session_state:  # once per visit: the saved choice may c
         "rep_phone": _saved_report.get("phone", ""),
         "rep_wa_key": _saved_report.get("whatsapp_apikey", ""),
         "rep_lang": _saved_report.get("language", st.session_state.lang),
+        "rep_city": _saved_report.get("city", weather.DEFAULT_CITY),
     })
-for _k in ("rep_freq", "rep_channels", "rep_email", "rep_phone", "rep_wa_key", "rep_lang"):
+st.session_state.setdefault("rep_city", weather.DEFAULT_CITY)
+for _k in ("rep_freq", "rep_channels", "rep_email", "rep_phone", "rep_wa_key", "rep_lang", "rep_city"):
     st.session_state[_k] = st.session_state[_k]
 MAX_SENDS_PER_SESSION = 3  # "Send me one now" uses the app's Gmail / Twilio account, so keep it small
 
 
 @st.cache_data(max_entries=30, show_spinner="Writing the report...")
-def report_for(household_key, best_name, frequency, hour, tiers, flat, budget, lang, _hourly, _res, _fact):
-    # cached per household, frequency, tariff, language and hour: the report changes when a new hour of readings arrives
+def report_for(household_key, best_name, frequency, hour, tiers, flat, budget, lang, wx, _hourly, _res, _fact):
+    # cached per household, frequency, tariff, language, weather and hour: the report changes when a new hour arrives
     return build_report(_hourly, _res["best_model"], frequency, now=hour, tiers=tiers, flat_price=flat,
-                        budget_egp=budget, fact=_fact, lang=lang)
+                        budget_egp=budget, fact=_fact, lang=lang, weather=wx)
+
+
+@st.cache_data(ttl=3 * 3600, show_spinner=False)
+def tomorrow_weather(city, today_iso):
+    """Tomorrow's weather from Open-Meteo (weather.py), asked at most every 3 hours per city."""
+    return weather.fetch_tomorrow(city, today=date.fromisoformat(today_iso))
+
+
+def city_picker(label_key="City"):
+    st.selectbox(T(label_key), list(weather.CITIES), key="rep_city",
+                 format_func=lambda c: weather.city_name(c, st.session_state.lang))
+
+
+def weather_card():
+    """Home page: tomorrow's weather and the saving tips that fit it."""
+    with st.container(key="card_weather"):
+        h, c = st.columns([3, 1])
+        h.subheader(T("Tomorrow's weather"), anchor=False)
+        with c:
+            city_picker()
+        w = tomorrow_weather(st.session_state.rep_city, f"{now_local():%Y-%m-%d}")
+        if not w:
+            st.info(T("Could not get tomorrow's weather right now."), icon="🌤️")
+            return
+        st.markdown(f"**{weather.summary(w, st.session_state.lang)}**")
+        show_tips([("info", t) for t in weather.tips(w, st.session_state.lang)])
+        st.caption(T("Forecast by Open-Meteo. The evening report and the phone app give the same tips."))
 
 
 def report_senders():
@@ -1311,6 +1342,7 @@ def render_reports():
     c3.radio(T("Report language"), ["en", "ar"], key="rep_lang", horizontal=True,
              format_func=lambda c: {"en": "English", "ar": "العربية"}[c])
     channels = st.session_state.rep_channels
+    city_picker("City (for tomorrow's weather tips)")
     a, b, c = st.columns(3)
     a.text_input(T("Gmail address"), key="rep_email", disabled="Gmail" not in channels, placeholder="you@gmail.com")
     b.text_input(T("Phone (with country code)"), key="rep_phone", placeholder="+201001234567",
@@ -1321,8 +1353,9 @@ def render_reports():
     now = now_local().floor("h")
     fact = fact_df if ml_choice == ALL_LABEL else fact_df[fact_df["LCLid"] == ml_choice]
     try:
+        wx = tomorrow_weather(st.session_state.rep_city, f"{now:%Y-%m-%d}")
         r = report_for(ml_choice, res["best_name"], st.session_state.rep_freq, now, tiers, flat, budget,
-                       st.session_state.rep_lang, hourly, res, fact)
+                       st.session_state.rep_lang, wx, hourly, res, fact)
     except Exception as e:
         st.warning(T("Could not build the report: {e}", e=e))
         return
@@ -1356,7 +1389,7 @@ def render_reports():
 
     sub = {"frequency": st.session_state.rep_freq, "channels": channels, "email": st.session_state.rep_email.strip(),
            "phone": st.session_state.rep_phone.strip(), "whatsapp_apikey": st.session_state.rep_wa_key.strip(),
-           "budget": budget, "language": st.session_state.rep_lang}
+           "budget": budget, "language": st.session_state.rep_lang, "city": st.session_state.rep_city}
     b1, b2 = st.columns(2)
     send = b1.button(T("Send me one now"), type="primary", icon=":material/send:", width="stretch", disabled=not channels)
     save = b2.button(T("Save my choice"), icon=":material/save:", width="stretch", disabled=not channels)
@@ -1589,6 +1622,7 @@ def render_home():
     st.space("large")
     home_energy_row()
     egp = T("EGP")
+    weather_card()
 
     with st.container(key="card_status"):
         s1, s2 = st.columns(2)

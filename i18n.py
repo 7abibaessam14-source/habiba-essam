@@ -294,6 +294,12 @@ AR = {
     "WhatsApp": "واتساب",
     "SMS": "رسالة SMS",
     "Report language": "لغة التقرير",
+    "City": "المدينة",
+    "City (for tomorrow's weather tips)": "المدينة (لنصائح طقس الغد)",
+    "Tomorrow's weather": "طقس الغد",
+    "Could not get tomorrow's weather right now.": "تعذّر الحصول على طقس الغد الآن.",
+    "Forecast by Open-Meteo. The evening report and the phone app give the same tips.":
+        "التوقعات من Open-Meteo. تقرير المساء وتطبيق الموبايل يعطيان نفس النصائح.",
     "Gmail address": "عنوان Gmail",
     "Phone (with country code)": "رقم الهاتف (مع كود الدولة)",
     "WhatsApp key (CallMeBot)": "مفتاح واتساب (CallMeBot)",

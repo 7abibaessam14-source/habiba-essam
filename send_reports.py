@@ -27,6 +27,7 @@ import store
 from notify import send_report
 from reports import as_email, as_sms, as_whatsapp, build_report, is_due, now_local
 from uci_loader import load_uci, uci_path
+import weather
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -71,6 +72,21 @@ def main():
     now = now_local()
     due = [s for s in subs if args.force or is_due(s.get("frequency", "Daily"), now)]
     print(f"{now:%Y-%m-%d %H:%M} Cairo: {len(subs)} subscriber(s), {len(due)} report(s) due.")
+
+    # tomorrow's weather: fetched once per city; a failure only leaves the weather out of the report
+    forecasts = {}
+
+    def weather_for(city):
+        city = city if city in weather.CITIES else weather.DEFAULT_CITY
+        if city not in forecasts:
+            forecasts[city] = weather.fetch_tomorrow(city, today=now.date())
+        return forecasts[city]
+
+    w = weather_for(weather.DEFAULT_CITY)
+    print(weather.summary(w) if w else "Weather: could not be fetched (reports go out without it).")
+    if w and not args.dry_run and store.supabase_config():  # the evening phone notification, for everyone subscribed
+        ok, msg = weather.send_push(w)
+        print(("ok   " if ok else "FAIL ") + "phone notification: " + msg)
     if not due:
         return 0
 
@@ -95,7 +111,8 @@ def main():
     failed = 0
     for s in due:
         r = build_report(hourly, res["best_model"], s.get("frequency", "Daily"), now=now,
-                         budget_egp=float(s.get("budget") or 0) or None, fact=fact, lang=s.get("language", "en"))
+                         budget_egp=float(s.get("budget") or 0) or None, fact=fact, lang=s.get("language", "en"),
+                         weather=weather_for(s.get("city", weather.DEFAULT_CITY)))
         texts = {"sms": as_sms(r), "whatsapp": as_whatsapp(r), "email": as_email(r)}
         print(f"\n--- {s.get('name', '?')}: {r['frequency']} by {', '.join(s.get('channels', []))} "
               f"({mask(s.get('email'))} {mask(s.get('phone'))})")
