@@ -1,0 +1,37 @@
+{
+ "place": "Sceaux, France (UCI household)",
+ "source": "Open-Meteo historical weather archive",
+ "hours": 33437,
+ "test_hours": 6688,
+ "corr_kwh_temp": -0.18655023715288005,
+ "rows": [
+  {
+   "model": "RandomForest",
+   "inputs": "without temperature",
+   "RMSE": 0.48531439175267665,
+   "MAE": 0.3333717307591979
+  },
+  {
+   "model": "RandomForest",
+   "inputs": "with temperature",
+   "RMSE": 0.4836495677841808,
+   "MAE": 0.33251110278967666
+  },
+  {
+   "model": "XGBoost",
+   "inputs": "without temperature",
+   "RMSE": 0.4799992905635249,
+   "MAE": 0.331889054135319
+  },
+  {
+   "model": "XGBoost",
+   "inputs": "with temperature",
+   "RMSE": 0.4793730704034958,
+   "MAE": 0.3316129556246077
+  }
+ ],
+ "rmse_change": {
+  "RandomForest": -0.003430403047565701,
+  "XGBoost": -0.0013046272616234948
+ }
+}

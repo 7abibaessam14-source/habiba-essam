@@ -50,10 +50,12 @@ from ml_models import (FEATURES, add_features, detect_anomalies, feature_importa
 import notify
 import powersave
 import sensor
+import sensor_ai
 import startup_cache
 import store
 import theme
 import weather
+from explain import explain_forecast
 from i18n import RTL_CSS, TRANSLATED_PAGES, T, day_month, is_ar, language_switch, month_name, month_year
 from reports import (CHANNELS, FREQUENCIES, as_email, as_sms, as_whatsapp, build_report, note, now_local, sms_parts,
                      today_series)
@@ -691,6 +693,17 @@ def render_forecast():
     st.caption(f"The {res['best_name']} model relies most on **{top['feature'].lower()}** ({top['share']:.0%}). "
                "Lag = the consumption some hours before; the model learns the household's daily and weekly habits.")
 
+    exp_file = Path(__file__).parent / "results" / "temperature_experiment.json"
+    if exp_file.exists():
+        st.subheader("Does the outdoor temperature help? (experiment)")
+        exp = json.loads(exp_file.read_text(encoding="utf-8"))
+        st.dataframe(pd.DataFrame(exp["rows"]).round(4), hide_index=True, width="stretch")
+        ch = ", ".join(f"{m}: RMSE {'down' if v < 0 else 'up'} {abs(v):.1%}" for m, v in exp["rmse_change"].items())
+        st.caption(f"Real hourly temperature of {exp['place']} from the {exp['source']} added as one more input "
+                   f"({exp['hours']:,} hours, same time split). {ch}. Correlation of hourly use with temperature: "
+                   f"{exp['corr_kwh_temp']:+.2f}. The gain is small because the past-use inputs already carry most of "
+                   "the weather's effect, so the live forecast keeps the simpler model. Made with temperature_experiment.py.")
+
     st.subheader("Actual vs predicted (unseen period)")
     days = st.slider("Days to show", 2, 30, 7)
     shown = res["test"].tail(days * 24)
@@ -718,6 +731,11 @@ def render_forecast():
     st.subheader("Next 24 hours")
     try:
         fc = forecast_next(res["best_model"], hourly, steps=24)
+        why_next = explain_forecast(hourly, fc, feature_importance(res["best_model"]))
+        with st.container(border=True):
+            st.markdown(f"**{why_next['headline']}**")
+            st.markdown("\n".join(f"- {r}" for r in why_next["reasons"]))
+            st.caption("Explainable AI: every reason above is computed from this home's own history.")
         recent = hourly.dropna().tail(24 * 5)
         nxt = pd.concat(
             [
@@ -1026,6 +1044,80 @@ def render_sensor():
 
     sensor_panel()
     render_power_save()
+    render_sensor_ai(volts)
+
+
+def render_sensor_ai(volts):
+    """AI on the sensor readings (sensor_ai.py): devices, anomalies, maintenance, home or away."""
+    st.divider()
+    st.subheader("Smart analysis (AI)", anchor=False)
+    st.caption("One sensor, many devices: the AI recognises each device from the size of its current jump "
+               "(and a motor's start-up spike), then looks for problems and habits.")
+    real, err = sensor.fetch_readings(24 * 14)
+    use_demo = st.toggle("Use sample data (demo)", value=err is not None or len(real) < 30,
+                         help="Realistic made-up readings: a lamp, a fan whose motor slowly draws more, and an LED strip.")
+    readings = sensor_ai.make_demo_readings() if use_demo else real
+    if not use_demo and err:
+        st.warning(err)
+        return
+    if not len(readings):
+        st.info("No readings in the last 14 days yet.")
+        return
+    learned = sensor.load_devices()
+    devices = learned or sensor_ai.DEFAULT_DEVICES
+    rec = sensor_ai.recognize(readings, devices, volts=volts)
+
+    t_dev, t_an, t_mt, t_home, t_learn = st.tabs(["Devices", "Anomalies", "Maintenance", "Home or away", "Teach a device"])
+    with t_dev:
+        st.markdown("**On now:** " + (", ".join(rec["on_now"]) if rec["on_now"] else "nothing recognised"))
+        st.dataframe(rec["usage"].rename(columns={"device": "Device", "times_on": "Times on", "hours_on": "Hours on",
+                                                  "energy_wh": "Energy (Wh)"}), hide_index=True, width="stretch")
+        ev = rec["events"].sort_values("time", ascending=False).head(30).copy()
+        if len(ev):
+            ev["time"] = ev["time"].dt.tz_convert("Africa/Cairo").dt.strftime("%d %b %H:%M")
+            st.dataframe(ev.rename(columns={"time": "Time", "device": "Device", "action": "Switched", "change_a": "Change (A)",
+                                            "confidence": "Confidence"}), hide_index=True, width="stretch")
+            known = (rec["events"]["device"] != "Unknown device").mean()
+            st.caption(f"{known:.0%} of {len(rec['events'])} switchings matched a known device. "
+                       f"Devices: {'learned on this page' if learned else 'the defaults (teach your own in the last tab)'}.")
+    with t_an:
+        an = sensor_ai.anomalies(readings, devices, rec)
+        if not an:
+            st.success("Nothing unusual found.", icon="✅")
+        for a in an[:10]:
+            st.warning(f"**{a['kind'].capitalize()}** · {a['time'].tz_convert('Africa/Cairo'):%d %b %H:%M}: {a['message']}", icon="⚠️")
+    with t_mt:
+        for m in sensor_ai.maintenance(readings, devices):
+            icon = {"ok": "✅", "check": "🛠️", "learning": "⏳"}[m["status"]]
+            text = f"**{m['device']}** · usual current {m['level_a']:.2f} A over {m['days']} days. {m['message']}"
+            (st.warning if m["status"] == "check" else st.info)(text, icon=icon)
+        st.caption("Predictive maintenance: the trend of each device's usual current from day to day (linear regression).")
+    with t_home:
+        occ = sensor_ai.occupancy(readings)
+        icon = {"home": "🏠", "away": "🚪", "forgotten": "💡", "unknown": "❔"}[occ["state"]]
+        st.info(occ["message"], icon=icon)
+        if occ["state"] == "forgotten":
+            st.caption("Tip: turn on Power save mode above to switch forgotten lamps off automatically.")
+    with t_learn:
+        st.markdown("1. Make sure the other devices are off or steady.  \n2. Switch the new device **on**.  \n"
+                    "3. Within 1 hour, give it a name and press **Learn**.")
+        name = st.text_input("Device name", max_chars=40, placeholder="Kitchen lamp")
+        can_edit = auth.is_admin() or not auth.login_enabled()
+        if st.button("Learn from the last switch-on", icon=":material/school:", disabled=not (name.strip() and can_edit)):
+            last_hour, e2 = sensor.fetch_readings(1)
+            dev = sensor_ai.learn_from_last_step(last_hour, name) if not e2 else None
+            if not dev:
+                st.error("No switch-on found in the last hour. Switch the device on and try again.")
+            else:
+                ok, msg = sensor.save_device(dev)
+                (st.success if ok else st.error)(
+                    f"Learned **{dev['name']}**: {dev['delta_a']:.2f} A{' with a motor start-up spike' if dev['inrush'] else ''}." if ok else msg)
+        if learned:
+            st.dataframe(pd.DataFrame(learned), hide_index=True, width="stretch")
+            gone = st.selectbox("Forget a device", [""] + [d["name"] for d in learned], disabled=not can_edit)
+            if gone and st.button("Forget", icon=":material/delete:", disabled=not can_edit):
+                ok, msg = sensor.delete_device(gone)
+                (st.success if ok else st.error)(msg)
 
 
 def render_power_save():
@@ -1060,6 +1152,17 @@ def render_power_save():
                         "lamp_w": lamp_w} if ok else settings
     if not can_edit:
         st.caption("Only an admin can change these settings.")
+
+    with st.container(border=True):
+        st.markdown("**Lamp 2 by hand** (relay on the ESP32)")
+        mode = powersave.load_lamp_mode(device)
+        labels = {"auto": "Auto (power save decides)", "on": "On", "off": "Off"}
+        new = st.segmented_control("Lamp 2", list(labels), default=mode, format_func=labels.get,
+                                   key="lamp2_mode", disabled=not can_edit, label_visibility="collapsed")
+        if new and new != mode:
+            ok, msg = powersave.set_lamp(device, new)
+            st.toast("Sent. The ESP32 switches it within about 10 seconds." if ok else msg, icon="✅" if ok else "⚠️")
+        st.caption("Works with the ESP32 version 2 and the relay. Without a relay the ESP32 only logs what it would do.")
 
     @st.fragment(run_every=5)
     def power_save_status():

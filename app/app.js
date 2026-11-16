@@ -114,7 +114,7 @@
     const ev = (m, e, a) => ({ created_at: new Date(now - m * 60000).toISOString(), event: e, current_a: a });
     const events = [ev(25, "warning", 3.5), ev(24, "turned_off", 3.5), ev(6, "restored", 1.8), ev(0.3, "warning", 3.5)];
     const settings = data.settings && data.settings._demo ? data.settings
-      : { _demo: true, enabled: true, limit_a: 3, after_min: 10, warn_s: 60, lamp_w: 21 };
+      : { _demo: true, enabled: true, limit_a: 3, after_min: 10, warn_s: 60, lamp_w: 21, lamp2_manual: "auto" };
     return { readings, events, settings, error: null };
   }
 
@@ -126,7 +126,7 @@
       const [r, s, e] = await Promise.all([
         sb.from("sensor_readings").select("created_at,current_a,peak_a,threshold_a,over_threshold,rssi_dbm")
           .eq("device_id", DEVICE).gte("created_at", since(1)).order("created_at", { ascending: true }).limit(2000),
-        sb.from("power_save_settings").select("enabled,limit_a,after_min,warn_s,lamp_w").eq("device_id", DEVICE),
+        sb.from("power_save_settings").select("enabled,limit_a,after_min,warn_s,lamp_w,lamp2_manual").eq("device_id", DEVICE),
         sb.from("power_save_events").select("created_at,event,current_a")
           .eq("device_id", DEVICE).gte("created_at", since(24)).order("created_at", { ascending: true }).limit(500),
       ]);
@@ -215,6 +215,7 @@
     const ps = powerState();
     let html = `<div class="head"><div class="brand">${mark(34)}${wordmark(17)}</div></div>`;
     if (data.error) html += `<div class="card alertcard"><div class="t">${esc(data.error)}</div></div>`;
+    html += assistantCard();
     if (ps.state === "warning") html += warningCard(ps);
     if (!last) {
       return html + `<div class="card empty">No readings in the last hour.<br>Turn on the ESP32: it sends one reading every 5 seconds.</div>` + weatherCard();
@@ -275,7 +276,7 @@
         <p class="small muted center" style="margin:0 0 12px">Only the owner can change power save.</p>
         <div class="grid2" style="margin-bottom:12px"><div class="card"><div class="lbl">Saved (24 h)</div><div class="mid" style="color:var(--accent)">${savedWh().toFixed(1)} Wh</div></div>
         <div class="card"><div class="lbl">Times off (24 h)</div><div class="mid">${times}</div></div></div>
-        ${colorCard()}${cityCard()}${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
+        ${lampCard()}${colorCard()}${cityCard()}${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     }
     html += `<div class="card"><div class="field"><span>Power save mode</span>
         <button class="switch ${draft.enabled ? "on" : ""}" data-act="toggle" aria-label="Power save mode" aria-pressed="${!!draft.enabled}"></button></div>
@@ -286,7 +287,7 @@
       <button class="btn" data-act="save" style="margin-bottom:12px">Save</button>
       <div class="grid2" style="margin-bottom:12px"><div class="card"><div class="lbl">Saved (24 h)</div><div class="mid" style="color:var(--accent)">${savedWh().toFixed(1)} Wh</div></div>
       <div class="card"><div class="lbl">Times off (24 h)</div><div class="mid">${times}</div></div></div>
-      ${colorCard()}${cityCard()}
+      ${lampCard()}${colorCard()}${cityCard()}
       ${DEMO ? "" : '<button class="btn ghost" data-act="logout">Sign out</button>'}`;
     return html;
   }
@@ -406,6 +407,115 @@
     return "Notifications are on.";
   }
 
+  function lampCard() {
+    const mode = (data.settings && data.settings.lamp2_manual) || "auto";
+    const names = { auto: "Auto", on: "On", off: "Off" };
+    if (!isAdmin) return `<div class="card row"><span>Lamp 2</span><span class="pill">${names[mode]}</span></div>`;
+    return `<div class="card"><div class="lbl" style="margin-bottom:8px">Lamp 2 by hand</div>
+      <div class="seg" style="margin:0">${["auto", "on", "off"].map((m) =>
+        `<button data-lamp="${m}" class="${m === mode ? "sel" : ""}">${m === "on" ? "💡 " : m === "off" ? "⏻ " : ""}${names[m]}</button>`).join("")}</div>
+      <div class="lbl small" style="margin-top:8px">Auto = power save decides. The ESP32 switches within about 10 seconds.</div></div>`;
+  }
+  async function setLamp(mode) {
+    const err = await saveSettings({ lamp2_manual: mode });
+    if (!err && data.settings) data.settings.lamp2_manual = mode;
+    return err;
+  }
+
+  // ---------- voice assistant: ask by voice (or by typing), it answers out loud ----------
+  let answer = null, listening = false;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  function voiceLang() { return store("amperec_voice") === "ar" ? "ar" : "en"; }
+  function assistantCard() {
+    const ar = voiceLang() === "ar";
+    return `<div class="card"><div class="row"><span class="lbl">${ar ? "اسأل AmperEC" : "Ask AmperEC"}</span>
+      <button class="pill" data-act="voicelang" style="border:0;cursor:pointer">${ar ? "العربية" : "English"}</button></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        ${SR ? `<button class="btn" data-act="mic" style="width:auto;padding:10px 16px" aria-label="Speak">${listening ? "…" : "🎤"}</button>` : ""}
+        <input id="ask" placeholder="${ar ? "مثلًا: كام التيار دلوقتي؟" : "e.g. How much current now?"}" dir="auto"
+          style="flex:1;min-width:0;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel);font-size:16px">
+        <button class="btn ghost" data-act="ask" style="width:auto;padding:10px 14px">${ar ? "اسأل" : "Ask"}</button></div>
+      ${answer ? `<div style="margin-top:12px" dir="auto"><div class="lbl small">${esc(answer.q)}</div><div style="margin-top:4px">${esc(answer.a)}</div></div>` : ""}
+      ${SR ? "" : `<div class="lbl small" style="margin-top:8px">${ar ? "المتصفح ده مش بيدعم الصوت؛ اكتب سؤالك." : "Voice is not supported in this browser; type your question."}</div>`}</div>`;
+  }
+  function has(q, words) { return words.some((w) => q.includes(w)); }
+  async function reply(qRaw) {
+    const q = qRaw.toLowerCase(), ar = voiceLang() === "ar";
+    const r = data.readings, last = r[r.length - 1];
+    const online = last && (Date.now() - new Date(last.created_at).getTime()) / 1000 <= OFFLINE_AFTER_S;
+    if (has(q, ["turn off", "switch off", "اطفي", "اقفل", "طفي"]) && has(q, ["lamp", "light", "لمبة", "النور", "اللمبه"])) {
+      if (!isAdmin) return ar ? "بس صاحب المشروع يقدر يتحكم في اللمبة." : "Only the owner can switch the lamp.";
+      const e = await setLamp("off");
+      return e ? (ar ? "معرفتش أبعت الأمر." : "I could not send that.") : (ar ? "تمام، هطفي لمبة 2 خلال 10 ثواني." : "OK, lamp 2 switches off within about 10 seconds.");
+    }
+    if (has(q, ["turn on", "switch on", "ولع", "شغل", "افتح"]) && has(q, ["lamp", "light", "لمبة", "النور", "اللمبه"])) {
+      if (!isAdmin) return ar ? "بس صاحب المشروع يقدر يتحكم في اللمبة." : "Only the owner can switch the lamp.";
+      const e = await setLamp("on");
+      return e ? (ar ? "معرفتش أبعت الأمر." : "I could not send that.") : (ar ? "تمام، هولّع لمبة 2 خلال 10 ثواني." : "OK, lamp 2 switches on within about 10 seconds.");
+    }
+    if (has(q, ["weather", "tomorrow", "hot", "temperature", "الطقس", "الجو", "بكرة", "بكره", "حر"])) {
+      if (!wx) return ar ? "معرفتش أجيب طقس بكرة دلوقتي." : "I could not get tomorrow's weather right now.";
+      const t = wxTips(wx)[0];
+      return ar ? `بكرة في ${wx.city} العظمى ${Math.round(wx.tmax)} والصغرى ${Math.round(wx.tmin)} درجة. ${t}`
+                : `Tomorrow in ${wx.city}: high ${Math.round(wx.tmax)}, low ${Math.round(wx.tmin)} degrees. ${t}`;
+    }
+    if (has(q, ["power save", "saving", "توفير", "التوفير"])) {
+      const s = powerState().state;
+      const en = { off: "Power save is off.", watching: "Power save is on and watching.", warning: "Power save is about to switch lamp 2 off.", turned_off: "Power save has switched lamp 2 off." };
+      const a = { off: "وضع التوفير مقفول.", watching: "وضع التوفير شغال ومراقب.", warning: "وضع التوفير هيطفي لمبة 2 حالًا.", turned_off: "وضع التوفير طفى لمبة 2." };
+      return (ar ? a : en)[s] + (ar ? ` وفّرت ${savedWh().toFixed(1)} وات ساعة النهارده.` : ` Saved ${savedWh().toFixed(1)} watt hours in the last day.`);
+    }
+    if (has(q, ["alert", "warning", "تنبيه", "تنبيهات", "مشكلة"])) {
+      const n = r.filter((x) => x.over_threshold).length;
+      return ar ? `في آخر ساعة فيه ${n} قراءة فوق الحد.` : `${n} readings were above the limit in the last hour.`;
+    }
+    if (has(q, ["online", "offline", "connected", "esp", "متصل", "شغال"]) && !has(q, ["current", "تيار"])) {
+      return online ? (ar ? "الجهاز متصل وبيبعت قراءات." : "The device is online and sending readings.")
+                    : (ar ? "الجهاز مش متصل دلوقتي." : "The device is offline right now.");
+    }
+    if (has(q, ["hour", "used", "energy", "consum", "استهلك", "استهلاك", "ساعة"])) {
+      if (!r.length) return ar ? "مفيش قراءات في آخر ساعة." : "There are no readings in the last hour.";
+      const wh = r.reduce((s, x) => s + x.current_a, 0) / r.length * VOLTS;
+      return ar ? `في آخر ساعة استهلكت حوالي ${wh.toFixed(0)} وات ساعة.` : `In the last hour you used about ${wh.toFixed(0)} watt hours.`;
+    }
+    if (has(q, ["current", "now", "watt", "power", "how much", "تيار", "دلوقتي", "الآن", "كام", "وات"])) {
+      if (!last) return ar ? "مفيش قراءات لسه." : "There are no readings yet.";
+      return ar ? `التيار دلوقتي ${last.current_a.toFixed(2)} أمبير، يعني حوالي ${(last.current_a * VOLTS).toFixed(0)} وات.`
+                : `Right now the current is ${last.current_a.toFixed(2)} amps, about ${(last.current_a * VOLTS).toFixed(0)} watts.`;
+    }
+    return ar ? "ممكن تسألني: كام التيار دلوقتي؟ استهلكت كام؟ الطقس بكرة؟ وضع التوفير؟ أو قول: اطفي اللمبة."
+              : "You can ask: how much current now? how much did I use? tomorrow's weather? power save? or say: turn off the lamp.";
+  }
+  function speak(text) {
+    try {
+      if (!("speechSynthesis" in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = voiceLang() === "ar" ? "ar-EG" : "en-US";
+      speechSynthesis.speak(u);
+    } catch (e) { /* no voice: the answer is still shown */ }
+  }
+  async function ask(q) {
+    q = (q || "").trim();
+    if (!q) return;
+    answer = { q, a: "…" };
+    render();
+    answer = { q, a: await reply(q) };
+    render();
+    speak(answer.a);
+  }
+  function listen() {
+    const rec = new SR();
+    rec.lang = voiceLang() === "ar" ? "ar-EG" : "en-US";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    listening = true; render();
+    rec.onresult = (e) => { listening = false; ask(e.results[0][0].transcript); };
+    rec.onerror = (e) => { listening = false; render(); toast(e.error === "not-allowed" ? "Allow the microphone for AmperEC." : "I did not catch that. Try again or type."); };
+    rec.onend = () => { if (listening) { listening = false; render(); } };
+    rec.start();
+  }
+
   function colorCard() {
     return `<div class="card"><div class="lbl" style="margin-bottom:10px">App color</div><div class="swatches">
       ${Object.keys(COLORS).map((n) => `<button class="swatch ${n === colorName() ? "sel" : ""}" data-color="${n}" aria-label="${n}" style="background:${COLORS[n][0]}"></button>`).join("")}
@@ -424,7 +534,8 @@
   async function refresh() {
     await load();
     if (document.querySelector(".login")) return; // signed out meanwhile
-    if (document.activeElement && document.activeElement.id === "citysel") return; // do not close the city list while it is open
+    const focused = document.activeElement && document.activeElement.id;
+    if (focused === "citysel" || focused === "ask" || listening) return; // do not interrupt a list, typing or listening
     render();
   }
 
@@ -440,7 +551,16 @@
       render();
       return;
     }
+    if (b.dataset.lamp) {
+      const err = await setLamp(b.dataset.lamp);
+      toast(err ? "Not sent: " + err : "Sent. The ESP32 switches lamp 2 within about 10 seconds.");
+      render();
+      return;
+    }
     const act = b.dataset.act;
+    if (act === "mic") { listen(); return; }
+    if (act === "ask") { ask((document.getElementById("ask") || {}).value); return; }
+    if (act === "voicelang") { store("amperec_voice", voiceLang() === "ar" ? "en" : "ar"); answer = null; render(); return; }
     if (act === "toggle") { draft.enabled = !draft.enabled; render(); return; }
     if (act === "save") {
       const err = await saveSettings({ enabled: !!draft.enabled, limit_a: draft.limit_a, after_min: draft.after_min, warn_s: draft.warn_s, lamp_w: draft.lamp_w });
@@ -464,6 +584,10 @@
       render();
     }
     if (act === "logout") { await sb.auth.signOut(); showLogin(); }
+  });
+
+  app.addEventListener("keydown", (ev) => {
+    if (ev.target.id === "ask" && ev.key === "Enter") { ev.preventDefault(); ask(ev.target.value); }
   });
 
   app.addEventListener("change", async (ev) => {

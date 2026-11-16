@@ -87,6 +87,30 @@ def restore(device_id, cfg=None, now=None):
     return _upsert(device_id, {"restore_at": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")}, cfg)
 
 
+LAMP_MODES = ("auto", "on", "off")  # auto = power save decides; on / off = switched by hand from the app or website
+
+
+def set_lamp(device_id, mode, cfg=None):
+    """Lamp 2 by hand: 'on', 'off' or back to 'auto'. The ESP32 (version 2) applies it within about 10 seconds."""
+    if mode not in LAMP_MODES:
+        return False, "Unknown mode."
+    return _upsert(device_id, {"lamp2_manual": mode}, cfg)
+
+
+def load_lamp_mode(device_id, cfg=None):
+    cfg = _cfg(cfg)
+    if not cfg:
+        return "auto"
+    url, key = cfg
+    try:
+        r = requests.get(f"{url}/rest/v1/power_save_settings", params={"select": "lamp2_manual", "device_id": f"eq.{device_id}"},
+                         headers=store._headers(key), timeout=TIMEOUT)
+        rows = r.json() if r.status_code == 200 else []
+        return (rows[0].get("lamp2_manual") or "auto") if rows else "auto"
+    except (requests.RequestException, ValueError, KeyError, TypeError, IndexError):
+        return "auto"
+
+
 def load_events(device_id, hours=24, cfg=None, now=None):
     """(DataFrame of this device's events in the last `hours`, oldest first, error text or None)."""
     empty = pd.DataFrame(columns=EVENT_COLUMNS)
